@@ -228,7 +228,12 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                   {fmtShort(proj.startDate || proj.tentativeStartDate)}
                   {" → "}
                   <span style={{ color: pauseColor, fontWeight: 700 }}>{fmtShort(firstPause.from)}</span>
-                  {lastResume && <>{"  |  "}{fmtShort(lastResume)}{" → "}{fmtShort(proj.endDate)}</>}
+                  {lastResume && (() => {
+                    // If the planned end date is already past (overdue while
+                    // blocked), clamp the second segment to "→ Today".
+                    const endPast = !proj.endDate || toDay(proj.endDate) < Date.now();
+                    return <>{"  |  "}{fmtShort(lastResume)}{" → "}{endPast ? "Today" : fmtShort(proj.endDate)}</>;
+                  })()}
                   <span style={{ color: c.textDim, fontWeight: 500 }}>{"  ["}{activeDays} active days{"]"}</span>
                 </span>
               );
