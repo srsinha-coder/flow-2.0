@@ -1489,7 +1489,7 @@ import { migrateProjectToTracks, derivePrimaryPhase } from '../lib/tracks';
   if (x03b) {
     x03b.blockedTracks = ["QA"];
     x03b.statusHistory = [
-      { type: "blocked", from: isoAgo(26 * DAY), to: isoAgo(19 * DAY) },
+      { type: "blocked", from: isoAgo(70 * DAY), to: isoAgo(40 * DAY) },
       { type: "blocked", from: x03b.blockedAt || isoAgo(5 * DAY), to: null },
     ];
   }
@@ -1497,26 +1497,26 @@ import { migrateProjectToTracks, derivePrimaryPhase } from '../lib/tracks';
   if (x12b) {
     x12b.blockedTracks = ["Dev"];
     x12b.statusHistory = [
-      { type: "blocked", from: isoAgo(20 * DAY), to: isoAgo(14 * DAY) },
+      { type: "blocked", from: isoAgo(55 * DAY), to: isoAgo(28 * DAY) },
       { type: "blocked", from: x12b.blockedAt || isoAgo(3 * DAY), to: null },
     ];
   }
   const x06d = byId("X06");
   if (x06d) {
-    x06d.deprioritizedAt = isoAgo(8 * DAY);
+    x06d.deprioritizedAt = isoAgo(18 * DAY);
     x06d.blockedTracks = ["Dev"];
     x06d.statusHistory = [
-      { type: "deprioritized", from: isoAgo(28 * DAY), to: isoAgo(20 * DAY) },
-      { type: "deprioritized", from: isoAgo(8 * DAY), to: null },
+      { type: "deprioritized", from: isoAgo(75 * DAY), to: isoAgo(45 * DAY) },
+      { type: "deprioritized", from: isoAgo(18 * DAY), to: null },
     ];
   }
   const x15d = byId("X15");
   if (x15d) {
-    x15d.deprioritizedAt = isoAgo(12 * DAY);
+    x15d.deprioritizedAt = isoAgo(20 * DAY);
     x15d.blockedTracks = ["Design"];
     x15d.statusHistory = [
-      { type: "deprioritized", from: isoAgo(30 * DAY), to: isoAgo(22 * DAY) },
-      { type: "deprioritized", from: isoAgo(12 * DAY), to: null },
+      { type: "deprioritized", from: isoAgo(80 * DAY), to: isoAgo(48 * DAY) },
+      { type: "deprioritized", from: isoAgo(20 * DAY), to: null },
     ];
   }
 

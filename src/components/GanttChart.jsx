@@ -369,12 +369,12 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                   )}
                 </div>
 
-                {/* Bigger blocked / deprioritized blocks — overlay above the bar */}
+                {/* Blocked / deprioritized blocks — overlay matching bar height */}
                 {statusSegments.map((s, si) => (
                   <div key={`seg-${si}`}
                     title={s.type === "blocked" ? "Blocked" : "Deprioritized"}
                     style={{
-                      position: "absolute", top: 8, height: 32,
+                      position: "absolute", top: 12, height: 24,
                       left: s.leftPx, width: Math.max(4, s.widthPx),
                       borderRadius: 5, zIndex: 4, pointerEvents: "none",
                       ...(s.type === "blocked"
