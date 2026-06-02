@@ -1710,9 +1710,20 @@ export default function ProjectsView({
                         ) : (() => {
                           const active = m.activeTracks || getActiveTracks(proj);
                           if (active.length === 0) return <span style={{ color: c.textDim, fontSize: 11 }}>—</span>;
+                          // Alpha/Beta active → show a release badge first (counts as shipped milestone)
+                          const releaseStage = active.includes("Beta") ? "Beta" : active.includes("Alpha") ? "Alpha" : null;
+                          const otherTracks = releaseStage ? active.filter(t => t !== "Alpha" && t !== "Beta") : active;
                           return (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "center" }}>
-                              {active.map(t => (
+                              {releaseStage && (
+                                <span style={{
+                                  padding: "1px 6px", borderRadius: layout.radiusXs,
+                                  background: `${c.cyan}18`, color: c.cyan,
+                                  fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
+                                  letterSpacing: "0.04em",
+                                }}>{releaseStage}</span>
+                              )}
+                              {otherTracks.map(t => (
                                 <span key={t} style={{
                                   padding: "1px 5px", borderRadius: layout.radiusXs,
                                   background: `${pc[t] || c.textDim}15`,
@@ -1812,7 +1823,11 @@ export default function ProjectsView({
                             </span>
                           ) : <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
                         ) : (() => {
-                          const displayEnd = isShipped && proj.shipped_at ? proj.shipped_at.slice(0, 10) : proj.endDate;
+                          // For shipped/alpha/beta, the timeline ends at the release milestone date.
+                          const milestone = getReleaseMilestone(proj);
+                          const milestoneEnd = milestone?.date ? milestone.date.slice(0, 10) : null;
+                          const displayEnd = milestoneEnd || proj.endDate;
+                          const endHighlight = !!milestoneEnd;
                           const allocated = daysBetween(proj.startDate, displayEnd);
                           const elapsed = Math.max(0, Math.min(daysBetween(proj.startDate, today), allocated));
                           const pct = allocated > 0 ? Math.round((elapsed / allocated) * 100) : 0;
@@ -1823,7 +1838,7 @@ export default function ProjectsView({
                                   {fmtDate(proj.startDate)}
                                 </span>
                                 <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textDim }}>→</span>
-                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: isShipped ? c.green : c.textMid }}>
+                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: endHighlight ? (isShipped ? c.green : c.cyan) : c.textMid }}>
                                   {fmtDate(displayEnd)}
                                 </span>
                               </div>
@@ -2965,6 +2980,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: c.amber, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
             Deprioritized
           </span>
+          {proj.deprioritizedAt && (
+            <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, color: c.amber, flexShrink: 0 }}>since {fmtDate(proj.deprioritizedAt.slice(0, 10))}</span>
+          )}
           <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, color: c.textMid, lineHeight: 1.5, flex: 1 }}>
             {proj.depriReason || <span style={{ color: c.textDim, fontStyle: "italic" }}>No reason provided.</span>}
           </div>
@@ -2988,6 +3006,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: c.red, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
             Blocked
           </span>
+          {proj.blockedAt && (
+            <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, color: c.red, flexShrink: 0 }}>since {fmtDate(proj.blockedAt.slice(0, 10))}</span>
+          )}
           <span style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, color: c.textMid, flex: 1 }}>
             {proj.blockedReason || <span style={{ color: c.textDim, fontStyle: "italic" }}>No reason provided.</span>}
           </span>
@@ -3002,6 +3023,28 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           }}>Unblock</button>}
         </div>
       )}
+
+      {/* ═══ ALPHA / BETA RELEASE BANNER — above hero card ═══ */}
+      {proj.status !== "shipped" && !proj.isBlocked && (() => {
+        const milestone = getReleaseMilestone(proj);
+        if (!milestone || milestone.stage === "Shipped" || !milestone.date) return null;
+        const accent = c.cyan;
+        return (
+          <div style={{
+            padding: `${space[3]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+            background: `${accent}10`, border: `1px solid ${accent}25`,
+            display: "flex", alignItems: "center", gap: space[3],
+          }}>
+            <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>🚀</span>
+            <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
+              {milestone.stage} Release
+            </span>
+            <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid }}>
+              Opened {fmtDate(milestone.date.slice(0, 10))}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* ═══ SHIPPED BANNER — above hero card ═══ */}
       {proj.status === "shipped" && (
@@ -3214,6 +3257,13 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                   <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>
                   <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Created</span>
                   <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 500, color: c.textDim }}>{fmtShort(proj.createdAt.split("T")[0])}</span>
+                </>
+              )}
+              {proj.startDate && (
+                <>
+                  <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>
+                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Started</span>
+                  <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 500, color: c.textDim }}>{fmtShort(proj.startDate.split("T")[0])}</span>
                 </>
               )}
             </div>

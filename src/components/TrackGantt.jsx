@@ -1,6 +1,12 @@
 import React, { useMemo, useRef, useEffect, useCallback } from "react";
 import { c, typo, space, layout, trackNames, phaseColors as getPhaseColors } from "../styles/theme";
-import { getTrackStatus, getTrackActiveDays } from "../lib/tracks";
+import { getTrackStatus, getTrackActiveDays, getReleaseMilestone } from "../lib/tracks";
+
+function fmtShort(iso) {
+  if (!iso) return "—";
+  const s = iso.length === 10 ? iso + "T00:00:00" : iso;
+  return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 const DAY_MS = 86_400_000;
 
@@ -14,7 +20,7 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
   const scrollRefs = useRef([]);
   const syncing = useRef(false);
 
-  const { timeStart, timeEnd, todayPos, endDatePos, shippedPos } = useMemo(() => {
+  const { timeStart, timeEnd, todayPos, endDatePos, shippedPos, statusLines } = useMemo(() => {
     const now = Date.now();
     let earliest = now;
     let latest = now + 14 * DAY_MS;
@@ -37,16 +43,36 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
       const e = toDay(proj.endDate);
       if (e > latest) latest = e + 7 * DAY_MS;
     }
+    // Include block/depri/resume dates in the visible range
+    for (const h of (proj.statusHistory || [])) {
+      const f = toDay(h.from); if (f && f < earliest) earliest = f; if (f && f > latest) latest = f;
+      if (h.to) { const tt = toDay(h.to); if (tt && tt < earliest) earliest = tt; if (tt && tt > latest) latest = tt; }
+    }
     earliest -= 3 * DAY_MS;
     latest += 7 * DAY_MS;
     const range = latest - earliest;
     const shipDate = proj.shippedAt || proj.gaEnteredAt;
     const shipP = (proj.status === "shipped" && shipDate) ? ((toDay(shipDate.slice(0, 10)) - earliest) / range) * 100 : null;
+
+    // Vertical status lines: red Blocked, orange Deprioritized, grey Resumed
+    const lines = [];
+    for (const h of (proj.statusHistory || [])) {
+      const fromPos = ((toDay(h.from) - earliest) / range) * 100;
+      if (fromPos > 0 && fromPos < 100) {
+        lines.push({ pos: fromPos, color: h.type === "blocked" ? c.red : c.amber, label: h.type === "blocked" ? "Blocked" : "Deprioritized", dashed: false });
+      }
+      if (h.to) {
+        const toPos = ((toDay(h.to) - earliest) / range) * 100;
+        if (toPos > 0 && toPos < 100) lines.push({ pos: toPos, color: c.textDim, label: "Resumed", dashed: true });
+      }
+    }
+
     return {
       timeStart: earliest, timeEnd: latest,
       todayPos: ((now - earliest) / range) * 100,
       endDatePos: proj.endDate ? ((toDay(proj.endDate) - earliest) / range) * 100 : null,
       shippedPos: shipP,
+      statusLines: lines,
     };
   }, [proj]);
 
@@ -163,20 +189,24 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
           letterSpacing: "0.08em", textTransform: "uppercase", color: c.textDim,
         }}>Track Timeline</span>
         <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-          {(proj.startDate || proj.endDate) && (
-            <span style={{
-              fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
-              color: c.textMid, fontVariantNumeric: "tabular-nums",
-            }}>
-              {proj.startDate
-                ? new Date(proj.startDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                : "—"}
-              {" → "}
-              {proj.endDate
-                ? new Date(proj.endDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                : "—"}
-            </span>
-          )}
+          {(proj.startDate || proj.endDate || proj.tentativeStartDate) && (() => {
+            const milestone = getReleaseMilestone(proj);
+            return (
+              <span style={{
+                fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
+                color: c.textMid, fontVariantNumeric: "tabular-nums",
+              }}>
+                {fmtShort(proj.startDate || proj.tentativeStartDate)}
+                {" → "}
+                {fmtShort(proj.endDate)}
+                {milestone?.date && (
+                  <span style={{ color: milestone.stage === "Shipped" ? c.green : c.cyan, fontWeight: 700 }}>
+                    {"  ·  "}{milestone.stage} on {fmtShort(milestone.date)}
+                  </span>
+                )}
+              </span>
+            );
+          })()}
           {(() => {
             if (!proj.endDate || proj.status === "shipped") return null;
             const endMs = toDay(proj.endDate);
@@ -282,6 +312,13 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                     width: 0, borderLeft: `2px solid ${c.green}`, zIndex: 2,
                   }} />
                 )}
+                {/* Block / Deprioritize / Resume lines */}
+                {statusLines.map((sl, i) => (
+                  <div key={`sl-${i}`} style={{
+                    position: "absolute", left: `${sl.pos}%`, top: 0, bottom: 0,
+                    width: 0, borderLeft: `2px ${sl.dashed ? "dashed" : "solid"} ${sl.color}`, zIndex: 2,
+                  }} />
+                ))}
                 {/* Bars */}
                 {trackData?.periods?.map((period, pi) => {
                   const pos = barStyle(period.started_at, period.completed_at);
@@ -342,6 +379,7 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
           todayPos > 0 && todayPos < 100 && { text: "Today", pos: todayPos, color: c.accent, weight: 700, halfW: 18 },
           endDatePos != null && endDatePos > 0 && endDatePos < 100 && { text: "Ship Date", pos: endDatePos, color: c.textDim, weight: 600, halfW: 26 },
           shippedPos != null && shippedPos > 0 && shippedPos < 100 && { text: "Shipped", pos: shippedPos, color: c.green, weight: 700, halfW: 22 },
+          ...statusLines.map(sl => ({ text: sl.label, pos: sl.pos, color: sl.color, weight: 700, halfW: sl.label.length * 3 + 6 })),
         ].filter(Boolean).sort((a, b) => a.pos - b.pos);
 
         // Collision is computed in PERCENT space (positions are already 0-100%
@@ -383,6 +421,30 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
           </div>
         );
       })()}
+
+      {/* ═══ Block / Deprioritize history messages ═══ */}
+      {(proj.statusHistory || []).filter(h => h.to).length > 0 && (
+        <div style={{
+          marginTop: space[3], paddingTop: space[3],
+          borderTop: `1px solid ${c.border}`,
+          display: "flex", flexDirection: "column", gap: space[1],
+        }}>
+          {(proj.statusHistory || []).filter(h => h.to).map((h, i) => (
+            <div key={`hist-${i}`} style={{
+              display: "flex", alignItems: "center", gap: space[2],
+              fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid,
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                background: h.type === "blocked" ? c.red : c.amber,
+              }} />
+              This project was {h.type === "blocked" ? "blocked" : "deprioritized"} from{" "}
+              <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.from)}</strong> to{" "}
+              <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.to)}</strong>.
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
