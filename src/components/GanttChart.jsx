@@ -274,7 +274,35 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
             const isBlocked = p.status === "blocked" || p.isBlocked;
             const active = getActiveTracks(p);
             const hasAlphaBeta = active.some(t => t === "Alpha" || t === "Beta");
-            const barFill = isBlocked ? BLOCKED_BAR_COLOR : isShipped ? SHIPPED_BAR_COLOR : hasAlphaBeta ? ALPHABETA_BAR_COLOR : BAR_COLOR;
+            // Base bar is black (active); shipped green; alpha/beta light green.
+            const barFill = isShipped ? SHIPPED_BAR_COLOR : hasAlphaBeta ? ALPHABETA_BAR_COLOR : BAR_COLOR;
+
+            // Status segments: red during blocked periods, grey during depri
+            // periods, computed as % offsets within the bar so the bar shows
+            // black → red (blocked) → black (resumed) → grey (depri), etc.
+            const barStartMs = p.startDate ? parseDate(p.startDate).getTime() : null;
+            const barEndMs = p.endDate ? parseDate(p.endDate).getTime() : null;
+            const barSpan = (barStartMs != null && barEndMs != null) ? (barEndMs - barStartMs) : 0;
+            const statusSegments = [];
+            if (barSpan > 0) {
+              const hist = (p.statusHistory && p.statusHistory.length)
+                ? p.statusHistory
+                : (isBlocked && p.blockedAt ? [{ type: "blocked", from: p.blockedAt, to: null }]
+                  : isDepri && p.deprioritizedAt ? [{ type: "deprioritized", from: p.deprioritizedAt, to: null }]
+                  : []);
+              for (const h of hist) {
+                const f = parseDate(h.from.slice(0, 10)).getTime();
+                const t = h.to ? parseDate(h.to.slice(0, 10)).getTime() : Date.now();
+                const segStart = Math.max(f, barStartMs);
+                const segEnd = Math.min(t, barEndMs);
+                if (segEnd <= segStart) continue;
+                statusSegments.push({
+                  leftPct: ((segStart - barStartMs) / barSpan) * 100,
+                  widthPct: ((segEnd - segStart) / barSpan) * 100,
+                  color: h.type === "blocked" ? "#ef4444" : "#9ca3af",
+                });
+              }
+            }
 
             return (
               <div key={p.id + "-bar"} style={{ height: ROW_H, position: "relative",
@@ -302,25 +330,26 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                     transition: `transform ${motion.fast.duration} ${motion.fast.easing}, filter ${motion.fast.duration} ${motion.fast.easing}, box-shadow ${motion.fast.duration} ${motion.fast.easing}`,
                   }}
                 >
-                  {isDepri ? (
-                    <div style={{
-                      position: "absolute", inset: 0, borderRadius: 5,
-                      background: `repeating-linear-gradient(-45deg, transparent, transparent 3px, rgba(110,120,148,0.25) 3px, rgba(110,120,148,0.25) 6px)`,
-                      border: `1px solid rgba(110,120,148,0.2)`,
+                  {/* Base fill (black / shipped green / alpha-beta) */}
+                  <div style={{
+                    position: "absolute", inset: 0, borderRadius: 5,
+                    background: barFill,
+                  }} />
+                  {/* Status segments — red blocked, grey deprioritized */}
+                  {statusSegments.map((s, si) => (
+                    <div key={si} style={{
+                      position: "absolute", top: 0, bottom: 0,
+                      left: `${s.leftPct}%`, width: `${s.widthPct}%`,
+                      background: s.color, zIndex: 1,
                     }} />
-                  ) : (
-                    <div style={{
-                      position: "absolute", inset: 0, borderRadius: 5,
-                      background: barFill,
-                    }} />
-                  )}
+                  ))}
                   {/* Track labels on bar */}
-                  {!isDepri && (active.length > 0 || isShipped) && (
+                  {(active.length > 0 || isShipped) && (
                     <span style={{
-                      position: "relative", zIndex: 1, paddingLeft: 8,
+                      position: "relative", zIndex: 2, paddingLeft: 8,
                       fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600,
                       letterSpacing: "0.03em",
-                      color: isBlocked ? "#7f1d1d" : hasAlphaBeta ? "#14532d" : "#ffffff",
+                      color: hasAlphaBeta ? "#14532d" : "#ffffff",
                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                       lineHeight: "24px", pointerEvents: "none",
                     }}>
