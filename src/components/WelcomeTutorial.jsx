@@ -8,19 +8,30 @@ import FlowLogo from "./FlowLogo";
 
 const STEPS = [
   {
+    target: "[data-tour='my-lens']",
+    title: "My Lens",
+    desc: "Toggle My Lens to filter everything to your squad and followed projects. Your personalized view of what matters.",
+    position: "bottom",
+    context: "list",
+    spotlightPadding: 8,
+    spotlightRadius: 22,
+    spotlightStroke: "#fff",
+  },
+  {
     target: "[data-tour='add-project']",
     title: "Add a Project",
-    desc: "Tap the + button to create your first project. Set a name, owner, complexity, and target dates.",
+    desc: "Tap the + button to create a project. Give it a name, description, complexity, and target dates.",
     position: "top",
     context: "list",
   },
   {
     target: "[data-tour='project-row']",
-    title: "Track Project",
-    desc: "Click any project row to see its full detail. Track status, priority, owner, and timeline at a glance.",
+    title: "View Project",
+    desc: "Tap any project row to open its full detail — shown next. Track status, priority, owner, and timeline at a glance.",
     position: "bottom",
     context: "list",
     spotlightPadding: 4,
+    cursorTap: true,
   },
   {
     target: "[data-tour='project-hero']",
@@ -30,9 +41,17 @@ const STEPS = [
     context: "detail",
   },
   {
+    target: "[data-tour='follow-project']",
+    title: "Follow Project",
+    desc: "Follow a project to stay updated with its latest activity in My Lens.",
+    position: "bottom",
+    context: "detail",
+    spotlightPadding: 14,
+  },
+  {
     target: "[data-tour='track-gantt']",
     title: "Manage Tracks",
-    desc: "Inside each project, manage parallel tracks like PRD, Design, Dev, and QA. Start, complete, or reopen tracks anytime.",
+    desc: "Manage parallel tracks like PRD, Design, Dev, and QA. Start, complete, or reopen tracks anytime.",
     position: "bottom",
     context: "detail",
   },
@@ -44,27 +63,9 @@ const STEPS = [
     context: "detail",
   },
   {
-    target: "[data-tour='follow-project']",
-    title: "Follow Project",
-    desc: "Stay updated with the latest on any project.",
-    position: "bottom",
-    context: "detail",
-    spotlightPadding: 14,
-  },
-  {
-    target: "[data-tour='my-lens']",
-    title: "View My Lens",
-    desc: "Toggle My Lens to filter everything to your squad and followed projects. Your personalized view of what matters.",
-    position: "bottom",
-    context: "list",
-    spotlightPadding: 8,
-    spotlightRadius: 22,
-    spotlightStroke: "#fff",
-  },
-  {
     target: "[data-tour='guide-tab']",
     title: "Learn More",
-    desc: "View more information on how Flow can help you keep your projects up to date and your teams informed.",
+    desc: "View more on how Flow keeps your projects up to date and your teams informed.",
     position: "bottom",
     context: "list",
     spotlightPadding: 8,
@@ -74,10 +75,58 @@ const STEPS = [
   },
 ];
 
+// ── Blurred backdrop with a rectangular hole over the target ──
+// Four backdrop-blur strips around the cutout keep the highlighted element
+// sharp while blurring everything else. Falls back to a full-screen blur
+// when there's no target (transitions).
+function BlurBackdrop({ rect, padding = 10 }) {
+  const blur = { backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", position: "fixed", zIndex: 9996, pointerEvents: "none" };
+  if (!rect) {
+    return <div style={{ ...blur, inset: 0 }} />;
+  }
+  const p = padding;
+  const x = rect.left - p;
+  const y = rect.top - p;
+  const w = rect.width + p * 2;
+  const h = rect.height + p * 2;
+  return (
+    <>
+      <div style={{ ...blur, left: 0, top: 0, width: "100vw", height: Math.max(0, y) }} />
+      <div style={{ ...blur, left: 0, top: y + h, width: "100vw", height: `calc(100vh - ${y + h}px)` }} />
+      <div style={{ ...blur, left: 0, top: y, width: Math.max(0, x), height: h }} />
+      <div style={{ ...blur, left: x + w, top: y, width: `calc(100vw - ${x + w}px)`, height: h }} />
+    </>
+  );
+}
+
+// ── Animated cursor that taps the highlighted element ──
+function CursorTap({ rect }) {
+  if (!rect) return null;
+  const cx = rect.left + Math.min(rect.width * 0.5, 160);
+  const cy = rect.top + rect.height / 2;
+  return (
+    <div style={{ position: "fixed", left: cx, top: cy, zIndex: 10000, pointerEvents: "none" }}>
+      {/* Tap ripple */}
+      <div style={{
+        position: "absolute", left: -2, top: -2, width: 30, height: 30,
+        borderRadius: "50%", border: `2px solid ${c.accent}`,
+        transform: "translate(-50%, -50%)",
+        animation: "tourTapRipple 1.4s ease-out infinite",
+      }} />
+      {/* Cursor pointer */}
+      <div style={{ animation: "tourCursorTap 1.4s ease-in-out infinite" }}>
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="#fff" stroke="#111" strokeWidth="1.5" strokeLinejoin="round" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.35))" }}>
+          <path d="M5 3l4.5 16 2.5-6.5L18.5 10z" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 // ── Spotlight overlay with cutout ──
 // A single positioned div uses an enormous box-shadow to darken everything
 // outside its bounds, creating a "hole" effect over the target element.
-function Spotlight({ rect, padding = 10, radius = 14, pulse = false, stroke = null }) {
+function Spotlight({ rect, padding = 10, radius = 14, stroke = null }) {
   const p = padding;
   const r = radius;
 
@@ -96,10 +145,11 @@ function Spotlight({ rect, padding = 10, radius = 14, pulse = false, stroke = nu
   const y = rect.top - p;
   const w = rect.width + p * 2;
   const h = rect.height + p * 2;
+  const ringColor = stroke || c.accent;
 
   // Build box-shadow: accent ring + optional white stroke + dark overlay
   const shadows = [
-    stroke ? `0 0 0 2px ${stroke}` : `0 0 0 2px ${c.accent}`,
+    `0 0 0 2px ${ringColor}`,
     `0 0 0 9999px rgba(0,0,0,0.55)`,
   ];
 
@@ -116,18 +166,16 @@ function Spotlight({ rect, padding = 10, radius = 14, pulse = false, stroke = nu
         animation: "spotlightFadeIn 0.25s cubic-bezier(0.22, 1, 0.36, 1) both",
         transition: "left 0.3s cubic-bezier(0.22,1,0.36,1), top 0.3s cubic-bezier(0.22,1,0.36,1), width 0.3s cubic-bezier(0.22,1,0.36,1), height 0.3s cubic-bezier(0.22,1,0.36,1)",
       }} />
-      {/* Pulse ring for emphasis on small/dark-bg targets */}
-      {pulse && (
-        <div style={{
-          position: "fixed",
-          left: x - 4, top: y - 4, width: w + 8, height: h + 8,
-          zIndex: 9998,
-          borderRadius: r + 4,
-          border: `2px solid ${c.accent}`,
-          pointerEvents: "none",
-          animation: "spotlightPulse 1.8s ease-in-out infinite",
-        }} />
-      )}
+      {/* Pulse ring — always on, draws attention to the highlighted area */}
+      <div style={{
+        position: "fixed",
+        left: x - 4, top: y - 4, width: w + 8, height: h + 8,
+        zIndex: 9998,
+        borderRadius: r + 4,
+        border: `2px solid ${ringColor}`,
+        pointerEvents: "none",
+        animation: "spotlightPulse 1.8s ease-in-out infinite",
+      }} />
     </>
   );
 }
@@ -206,7 +254,7 @@ function TourTooltip({ step, stepIdx, totalSteps, rect, onNext, onBack, onSkip, 
     <div ref={tooltipRef} data-tour-tooltip style={style}>
       {/* Step counter */}
       <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
+        display: "flex", alignItems: "center",
         marginBottom: space[3],
       }}>
         <span style={{
@@ -215,14 +263,6 @@ function TourTooltip({ step, stepIdx, totalSteps, rect, onNext, onBack, onSkip, 
         }}>
           STEP {stepIdx + 1} OF {totalSteps}
         </span>
-        <button
-          onClick={onSkip}
-          style={{
-            background: "transparent", border: "none", padding: "2px 6px",
-            fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim,
-            cursor: "pointer",
-          }}
-        >Skip tour</button>
       </div>
 
       {/* Progress dots */}
@@ -587,8 +627,12 @@ export default function WelcomeTutorial({ onComplete, onStartTour, onOpenProject
     if (!step) return;
 
     if (step.context === "detail" && currentContextRef.current !== "detail" && onOpenProject) {
-      // Open a project detail for detail-context steps
-      const target = (projects || []).find(p => p.status === "in_flight" || p.status === "active");
+      // Prefer the project shown in the highlighted list row so the detail
+      // page name matches the row the user just saw.
+      const rowEl = document.querySelector("[data-tour='project-row']");
+      const rowId = rowEl?.__projId;
+      const target = (rowId && (projects || []).find(p => p.id === rowId))
+        || (projects || []).find(p => p.status === "in_flight" || p.status === "active");
       if (target) {
         currentContextRef.current = "detail";
         onOpenProject(target.id);
@@ -785,22 +829,28 @@ export default function WelcomeTutorial({ onComplete, onStartTour, onOpenProject
   // Touring phase
   const step = STEPS[stepIdx];
 
+  // Effective cutout rect (accounts for spotlightMaxHeight clamping)
+  const cutoutRect = transitioning ? null : (step.spotlightMaxHeight && targetRect && targetRect.height > step.spotlightMaxHeight
+    ? { left: targetRect.left, top: targetRect.top + (targetRect.height - step.spotlightMaxHeight) / 2, width: targetRect.width, height: step.spotlightMaxHeight }
+    : targetRect);
+
   return ReactDOM.createPortal(
     <>
+      {/* Blurred backdrop with a sharp hole over the target */}
+      <BlurBackdrop rect={cutoutRect} padding={step.spotlightPadding ?? 10} />
       {/* Click blocker behind spotlight */}
       <div
         style={{ position: "fixed", inset: 0, zIndex: 9997 }}
         onClick={(e) => e.stopPropagation()}
       />
       <Spotlight
-        rect={transitioning ? null : (step.spotlightMaxHeight && targetRect && targetRect.height > step.spotlightMaxHeight
-          ? { left: targetRect.left, top: targetRect.top + (targetRect.height - step.spotlightMaxHeight) / 2, width: targetRect.width, height: step.spotlightMaxHeight }
-          : targetRect)}
+        rect={cutoutRect}
         padding={step.spotlightPadding}
         radius={step.spotlightRadius}
-        pulse={step.pulse}
         stroke={step.spotlightStroke}
       />
+      {/* Animated cursor tap (e.g. "tap a row to open detail") */}
+      {!transitioning && step.cursorTap && <CursorTap rect={cutoutRect} />}
       {!transitioning && (
         <TourTooltip
           step={step}

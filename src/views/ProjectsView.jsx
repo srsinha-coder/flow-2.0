@@ -1567,7 +1567,12 @@ export default function ProjectsView({
                 </tr>
               </thead>
               <tbody>
-                {tabProjects.map((proj, fi) => {
+                {(() => {
+                  // Tutorial highlights the first in-flight row (it has the full
+                  // detail layout the tour walks through); fall back to row 0.
+                  const firstInFlightIdx = tabProjects.findIndex(p => p.status === "in_flight");
+                  return tabProjects.map((proj, fi) => {
+                  const tourRow = fi === (firstInFlightIdx >= 0 ? firstInFlightIdx : 0);
                   const m = metrics[proj.id] || {};
                   const isFocused = kbActive && fi === focusIdx;
                   const isHovered = hoveredProject === proj.id;
@@ -1602,7 +1607,7 @@ export default function ProjectsView({
                     <React.Fragment key={proj.id}>
                     <tr
                       ref={el => { if (el) el.__projId = proj.id; }}
-                      {...(fi === 0 ? { "data-tour": "project-row" } : {})}
+                      {...(tourRow ? { "data-tour": "project-row" } : {})}
                       className={isFocused ? "flow-kb-focus" : undefined}
                       onMouseEnter={(e) => { setHoveredProject(proj.id); e.currentTarget.style.transform = "scale(1.008)"; e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.07)"; e.currentTarget.style.zIndex = "2"; e.currentTarget.style.position = "relative"; }}
                       onMouseLeave={(e) => { setHoveredProject(null); e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.zIndex = "auto"; e.currentTarget.style.position = "static"; }}
@@ -1722,41 +1727,25 @@ export default function ProjectsView({
                         })()}
                       </td>
 
-                      {/* Team — solid filled avatar bubbles */}
+                      {/* Team — member count */}
                       <td style={{
                         padding: `${space[3]}px ${space[4]}px`, textAlign: "center",
                         borderBottom: cellBorder,
                       }}>
-                        {isUpcoming ? <span style={{ color: c.textDim, fontSize: 11 }}>—</span> : (() => {
-                          const SOLID_COLORS = ["#0E7490", "#B45309", "#6D28D9", "#059669", "#DC2626", "#E8590C"];
-                          return (
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                              {showTeam.map((person, idx) => (
-                                  <div key={person.id} title={person.name} style={{
-                                    width: 28, height: 28, borderRadius: 8,
-                                    background: SOLID_COLORS[idx % SOLID_COLORS.length], color: "#fff",
-                                    display: "flex", alignItems: "center", justifyContent: "center",
-                                    fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 700,
-                                    border: "2px solid #fff",
-                                    marginLeft: idx > 0 ? -6 : 0,
-                                    position: "relative", zIndex: idx + 1,
-                                  }}>{initialsOf(person.name)}</div>
-                              ))}
-                              {extraCount > 0 && (
-                                <div style={{
-                                  width: 28, height: 28, borderRadius: 8,
-                                  background: "#EDEDF0", color: c.textMid,
-                                  display: "flex", alignItems: "center", justifyContent: "center",
-                                  fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
-                                  border: "2px solid #fff",
-                                  marginLeft: showTeam.length > 0 ? -6 : 0,
-                                  position: "relative", zIndex: showTeam.length + 1,
-                                }}>{extraCount}</div>
-                              )}
-                              {allTeam.length === 0 && <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim }}>—</span>}
-                            </div>
-                          );
-                        })()}
+                        {isUpcoming || allTeam.length === 0 ? (
+                          <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
+                        ) : (
+                          <span title={allTeam.map(p => p.name).join(", ")} style={{
+                            display: "inline-flex", alignItems: "center", gap: 5,
+                            fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
+                            color: c.textMid, fontVariantNumeric: "tabular-nums",
+                          }}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={c.textDim} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                            </svg>
+                            {allTeam.length}
+                          </span>
+                        )}
                       </td>
 
                       {/* Updated + activity peek icon */}
@@ -1876,7 +1865,8 @@ export default function ProjectsView({
                     </tr>
                     </React.Fragment>
                   );
-                })}
+                });
+                })()}
               </tbody>
         </TableShell>
       )}
@@ -1946,12 +1936,12 @@ export default function ProjectsView({
       }}
       onMouseEnter={e => { e.currentTarget.style.background = c.accentHover; }}
       onMouseLeave={e => { e.currentTarget.style.background = c.accent; }}
-      >Add project</button>}
+      ><span style={{ fontSize: 17, lineHeight: 1, marginTop: -1 }}>+</span> Add project</button>}
 
       {/* Create Project Overlay */}
       {showCreate && <CreateProjectOverlay
         projects={projects} people={people} squads={squads} setProjects={setProjects}
-        personProfile={personProfile}
+        personProfile={personProfile} isAdmin={isAdmin}
         onClose={() => setShowCreate(false)}
         onCreated={(id, name) => {
           setCreateSuccess({ name, id });
@@ -2045,9 +2035,10 @@ export default function ProjectsView({
 /* ══════════════════════════════════════════════════════════════════
    CREATE PROJECT OVERLAY
    ══════════════════════════════════════════════════════════════════ */
-function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, onCreated, personProfile }) {
+function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, onCreated, personProfile, isAdmin = false }) {
   useDevLabel('CreateProjectOverlay', 'src/views/ProjectsView.jsx', 'Modal overlay form for creating new projects with all field inputs');
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [owner, setOwner] = useState(personProfile?.name || "");
   const [squad, setSquad] = useState(personProfile?.squad || "");
   const [priority, setPriority] = useState("P2");
@@ -2067,7 +2058,7 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   const allOwners = people ? people.map(p => p.name).sort() : [...new Set(projects.map(p => p.owner).filter(Boolean))].sort();
 
   const previewId = useMemo(() => {
-    const nums = projects.map(p => parseInt(p.id.replace(/\D/g, ""), 10)).filter(n => !isNaN(n));
+    const nums = projects.map(p => parseInt((p.id || "").replace(/\D/g, ""), 10)).filter(n => !isNaN(n));
     const max = nums.length > 0 ? Math.max(...nums) : 0;
     return `X${String(max + 1).padStart(2, "0")}`;
   }, [projects]);
@@ -2093,7 +2084,7 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
     }
     const primaryPhase = startNow && selectedTracks.length > 0 ? selectedTracks[selectedTracks.length - 1] : null;
     const newProj = {
-      id: tempId, name: name.trim(), description: null,
+      id: tempId, name: name.trim(), description: description.trim() || null,
       owner, squad, phase: primaryPhase, startDate: startNow ? (startDate || null) : null, endDate: endDate || null,
       status: startNow ? "in_flight" : "upcoming",
       tracks,
@@ -2208,11 +2199,47 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
             <Inp value={name} onChange={e => { if (e.target.value.length <= 100) setName(e.target.value); }} placeholder="e.g. Checkout Redesign" style={{ width: "100%" }} autoFocus maxLength={100} />
           </div>
 
+          {/* Description — optional */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={fieldLabel}>Description <span style={{ color: c.textDim, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— optional</span></div>
+              <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: description.length > 240 ? c.red : c.textDim, fontVariantNumeric: "tabular-nums" }}>{description.length}/240</span>
+            </div>
+            <textarea
+              value={description}
+              onChange={e => { if (e.target.value.length <= 240) setDescription(e.target.value); }}
+              placeholder="What is this project about?"
+              rows={2}
+              style={{
+                width: "100%", boxSizing: "border-box",
+                padding: `${space[2]}px ${space[3]}px`,
+                borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                background: c.surfaceAlt, color: c.text,
+                fontFamily: typo.bodyMd.font, fontSize: 13, lineHeight: 1.5,
+                resize: "none", outline: "none",
+              }}
+              onFocus={e => { e.currentTarget.style.borderColor = c.accent; }}
+              onBlur={e => { e.currentTarget.style.borderColor = c.border; }}
+            />
+          </div>
+
           {/* Owner + Squad */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
             <div>
               <div style={fieldLabel}>Owner</div>
-              <SearchSelect value={owner} onChange={setOwner} options={allOwners} placeholder="Search people..." />
+              {isAdmin ? (
+                <SearchSelect value={owner} onChange={setOwner} options={allOwners} placeholder="Search people..." />
+              ) : (
+                <div title="Only an admin can assign a different owner" style={{
+                  height: 40, display: "flex", alignItems: "center", gap: space[2],
+                  padding: `0 ${space[3]}px`, borderRadius: layout.radiusSm,
+                  border: `1px solid ${c.border}`, background: c.surfaceAlt,
+                  fontFamily: typo.bodyMd.font, fontSize: 14, color: c.textMid,
+                }}>
+                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>You</span>
+                  {owner || personProfile?.name || "—"}
+                </div>
+              )}
             </div>
             <div>
               <div style={fieldLabel}>Squad</div>
@@ -3087,6 +3114,14 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 </button>
               )}
             </div>
+
+            {/* Description */}
+            {proj.description && (
+              <div style={{
+                fontFamily: typo.bodyMd.font, fontSize: 14, color: c.textMid,
+                lineHeight: 1.5, marginTop: space[2], maxWidth: "72ch",
+              }}>{proj.description}</div>
+            )}
 
             {/* Row 3: Owner | Squad */}
             <div style={{ display: "flex", alignItems: "center", gap: space[2], marginTop: space[2] }}>
