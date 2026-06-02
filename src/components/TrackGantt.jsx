@@ -20,7 +20,7 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
   const scrollRefs = useRef([]);
   const syncing = useRef(false);
 
-  const { timeStart, timeEnd, todayPos, endDatePos, shippedPos, statusLines } = useMemo(() => {
+  const { timeStart, timeEnd, todayPos, endDatePos, shippedPos, statusLines, statusBands, resumeDate } = useMemo(() => {
     const now = Date.now();
     let earliest = now;
     let latest = now + 14 * DAY_MS;
