@@ -166,16 +166,6 @@ function Spotlight({ rect, padding = 10, radius = 14, stroke = null }) {
         animation: "spotlightFadeIn 0.25s cubic-bezier(0.22, 1, 0.36, 1) both",
         transition: "left 0.3s cubic-bezier(0.22,1,0.36,1), top 0.3s cubic-bezier(0.22,1,0.36,1), width 0.3s cubic-bezier(0.22,1,0.36,1), height 0.3s cubic-bezier(0.22,1,0.36,1)",
       }} />
-      {/* Pulse ring — always on, draws attention to the highlighted area */}
-      <div style={{
-        position: "fixed",
-        left: x - 4, top: y - 4, width: w + 8, height: h + 8,
-        zIndex: 9998,
-        borderRadius: r + 4,
-        border: `2px solid ${ringColor}`,
-        pointerEvents: "none",
-        animation: "spotlightPulse 1.8s ease-in-out infinite",
-      }} />
     </>
   );
 }

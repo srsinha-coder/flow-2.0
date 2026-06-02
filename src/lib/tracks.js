@@ -78,6 +78,42 @@ export function getCompletedTracks(proj) {
   return result;
 }
 
+/**
+ * Pause (close) all currently-open track periods at the given ISO time.
+ * Returns the list of track names that were open (for later resume).
+ */
+export function pauseAllTracks(proj, atISO) {
+  const open = getActiveTracks(proj);
+  for (const name of open) {
+    const periods = proj.tracks[name].periods;
+    const last = periods[periods.length - 1];
+    if (last && last.completed_at === null) last.completed_at = atISO;
+  }
+  return open;
+}
+
+/**
+ * Release milestone for a project: the date it shipped, or the date its
+ * Alpha/Beta track opened (Alpha/Beta count as ship milestones).
+ * Returns { stage: "Shipped"|"Alpha"|"Beta", date: ISO } or null.
+ */
+export function getReleaseMilestone(proj) {
+  if (proj.status === "shipped") {
+    const date = proj.shippedAt || proj.shipped_at || proj.gaEnteredAt || null;
+    return { stage: "Shipped", date };
+  }
+  if (!proj.tracks) return null;
+  // Beta takes precedence over Alpha as the later milestone
+  for (const stage of ["Beta", "Alpha"]) {
+    const t = proj.tracks[stage];
+    if (t && t.periods && t.periods.length > 0) {
+      const firstOpen = t.periods.find(p => p.completed_at === null) || t.periods[0];
+      return { stage, date: firstOpen.started_at };
+    }
+  }
+  return null;
+}
+
 export function startTrack(proj, trackName) {
   if (!proj.tracks) proj.tracks = {};
   if (!proj.tracks[trackName]) {

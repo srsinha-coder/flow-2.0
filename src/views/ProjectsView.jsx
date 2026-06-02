@@ -17,7 +17,7 @@ import { getProjectRole, can as defaultCan } from "../lib/permissions";
 import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB } from "../lib/mutations";
-import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase } from "../lib/tracks";
+import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, pauseAllTracks, getReleaseMilestone } from "../lib/tracks";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
@@ -2484,6 +2484,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [depriReasonText, setDepriReasonText] = useState("");
   const [blockedReasonModal, setBlockedReasonModal] = useState(false);
   const [blockedReasonText, setBlockedReasonText] = useState("");
+  // Resume flow (unblock / move-to-active): pick which tracks to resume
+  const [resumeModal, setResumeModal] = useState(null); // { kind: "blocked"|"deprioritized" } | null
+  const [resumeTracks, setResumeTracks] = useState([]);
   const [showOverrides, setShowOverrides] = useState(false);
   const [stagePickerOpen, setStagePickerOpen] = useState(false);
   const [startNowModal, setStartNowModal] = useState(false);
@@ -2515,6 +2518,80 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
     // Show toast
     if (toastMsg) window.__flowToast?.(toastMsg);
   }, [proj.id, setProjects]);
+
+  // ── Block / Deprioritize: stop all open tracks, record the date + which
+  //    tracks were open (for resume), and append to statusHistory ──
+  const pauseProjectForStatus = useCallback((kind, reason) => {
+    const now = new Date().toISOString();
+    setProjects(prev => prev.map(p => {
+      if (p.id !== proj.id) return p;
+      const draft = { ...p, tracks: JSON.parse(JSON.stringify(p.tracks || {})) };
+      const openTracks = pauseAllTracks(draft, now);
+      const history = [...(p.statusHistory || []), { type: kind, from: now, to: null }];
+      const next = {
+        ...draft,
+        tracks: draft.tracks,
+        blockedTracks: openTracks,
+        statusHistory: history,
+        ...(kind === "blocked"
+          ? { isBlocked: true, blockedReason: reason || null, blockedAt: now }
+          : { status: "deprioritized", depriReason: reason || null, deprioritizedAt: now }),
+      };
+      return next;
+    }));
+    if (isDevSeedMode()) {
+      const raw = projects.find(p => p.id === proj.id);
+      if (raw) {
+        const openTracks = pauseAllTracks(raw, now);
+        raw.blockedTracks = openTracks;
+        raw.statusHistory = [...(raw.statusHistory || []), { type: kind, from: now, to: null }];
+        if (kind === "blocked") { raw.isBlocked = true; raw.blockedReason = reason || null; raw.blockedAt = now; }
+        else { raw.status = "deprioritized"; raw.depriReason = reason || null; raw.deprioritizedAt = now; }
+        devStore.persistProjects(projects);
+      }
+    }
+  }, [proj.id, setProjects, projects]);
+
+  // ── Resume (unblock / move-to-active): reopen chosen tracks, close the
+  //    open statusHistory entry, clear blocked/depri flags ──
+  const resumeProject = useCallback((kind, selectedTracks) => {
+    const now = new Date().toISOString();
+    setProjects(prev => prev.map(p => {
+      if (p.id !== proj.id) return p;
+      const draft = { ...p, tracks: JSON.parse(JSON.stringify(p.tracks || {})) };
+      for (const t of selectedTracks) {
+        if (!draft.tracks[t]) draft.tracks[t] = { periods: [], owner: null };
+        draft.tracks[t].periods.push({ started_at: now, completed_at: null });
+      }
+      const history = (p.statusHistory || []).map(h =>
+        h.type === kind && h.to === null ? { ...h, to: now } : h
+      );
+      const primaryPhase = derivePrimaryPhase(draft);
+      return {
+        ...draft,
+        status: "in_flight",
+        phase: primaryPhase,
+        statusHistory: history,
+        blockedTracks: null,
+        ...(kind === "blocked"
+          ? { isBlocked: false, blockedReason: null, blockedAt: null }
+          : { depriReason: null, deprioritizedAt: null }),
+      };
+    }));
+    if (isDevSeedMode()) {
+      const raw = projects.find(p => p.id === proj.id);
+      if (raw) {
+        for (const t of selectedTracks) {
+          if (!raw.tracks[t]) raw.tracks[t] = { periods: [], owner: null };
+          raw.tracks[t].periods.push({ started_at: now, completed_at: null });
+        }
+        raw.status = "in_flight";
+        raw.phase = derivePrimaryPhase(raw);
+        devStore.persistProjects(projects);
+      }
+    }
+  }, [proj.id, setProjects, projects]);
+
   const [reactivateModal, setReactivateModal] = useState(false);
   const [retroDateModal, setRetroDateModal] = useState(false);
   const [pendingSave, setPendingSave] = useState(null); // cached overrides when a retro-date confirmation is open
@@ -2892,9 +2969,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
             {proj.depriReason || <span style={{ color: c.textDim, fontStyle: "italic" }}>No reason provided.</span>}
           </div>
           {can.changeStatus(projRole) && <button type="button" onClick={() => {
-            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, status: "in_flight", depriReason: null } : p));
-            updateProjectInDB(proj.id, { status: "in_flight", depriReason: null });
-            recordAction("project_status_changed", { from: "deprioritized", to: "in_flight" }, "Project moved back to in flight");
+            setResumeTracks(proj.blockedTracks && proj.blockedTracks.length ? [...proj.blockedTracks] : ["PRD"]);
+            setResumeModal({ kind: "deprioritized" });
           }} style={{
             padding: `4px 12px`, borderRadius: 999, flexShrink: 0,
             background: "transparent", border: `1px solid ${c.amber}`,
@@ -2916,9 +2992,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
             {proj.blockedReason || <span style={{ color: c.textDim, fontStyle: "italic" }}>No reason provided.</span>}
           </span>
           {can.changeStatus(projRole) && <button type="button" onClick={() => {
-            setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, isBlocked: false, blockedReason: null, blockedAt: null } : p));
-            updateProjectInDB(proj.id, { isBlocked: false, blockedReason: null, blockedAt: null });
-            recordAction("project_unblocked", { reason: proj.blockedReason }, "Project unblocked");
+            setResumeTracks(proj.blockedTracks && proj.blockedTracks.length ? [...proj.blockedTracks] : ["PRD"]);
+            setResumeModal({ kind: "blocked" });
           }} style={{
             padding: `4px 12px`, borderRadius: 999, flexShrink: 0,
             background: "transparent", border: `1px solid ${c.red}`,
@@ -4164,15 +4239,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           <Btn variant="secondary" style={{ borderColor: c.amberBorder, color: c.amber }}
             disabled={!depriReasonText.trim()}
             onClick={() => {
-              const overrides = { status: "deprioritized", depriReason: depriReasonText.trim() };
+              pauseProjectForStatus("deprioritized", depriReasonText.trim());
+              updateProjectInDB(proj.id, { status: "deprioritized", depriReason: depriReasonText.trim(), deprioritizedAt: new Date().toISOString() });
+              recordAction("project_status_changed", { from: "active", to: "deprioritized", reason: depriReasonText.trim() }, "Project deprioritized — all tracks paused");
               setDepriReasonModal(false);
-              recordAction("project_status_changed", { from: "active", to: "deprioritized", reason: depriReasonText.trim() }, "Project deprioritized");
-              if (datesChanged && pastHistoryWeekCount > 0) {
-                setPendingSave(overrides);
-                setRetroDateModal(true);
-              } else {
-                doSave(overrides);
-              }
             }}>
             Deprioritize
           </Btn>
@@ -4212,17 +4282,55 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           <Btn variant="secondary" style={{ borderColor: c.redBorder, color: c.red }}
             disabled={!blockedReasonText.trim()}
             onClick={() => {
-              const now = new Date().toISOString();
-              const changes = { isBlocked: true, blockedReason: blockedReasonText.trim(), blockedAt: now };
-              setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, ...changes } : p));
-              updateProjectInDB(proj.id, changes);
-              recordAction("project_blocked", { reason: blockedReasonText.trim() }, "Project marked as blocked");
+              pauseProjectForStatus("blocked", blockedReasonText.trim());
+              updateProjectInDB(proj.id, { isBlocked: true, blockedReason: blockedReasonText.trim(), blockedAt: new Date().toISOString() });
+              recordAction("project_blocked", { reason: blockedReasonText.trim() }, "Project blocked — all tracks paused");
               setBlockedReasonModal(false);
             }}>
             Mark blocked
           </Btn>
         </div>
       </Modal>
+
+      {/* ═══ RESUME MODAL — pick which tracks to resume on unblock / move-to-active ═══ */}
+      {resumeModal && (
+        <Modal open onClose={() => setResumeModal(null)} title={resumeModal.kind === "blocked" ? "Resume this project" : "Move back to active"} accent={c.accent}>
+          <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, color: c.textMid, lineHeight: 1.6, marginBottom: space[4] }}>
+            Select the tracks to resume for <strong style={{ color: c.text }}>{proj.name}</strong>. Tracks that were open when it was {resumeModal.kind === "blocked" ? "blocked" : "deprioritized"} are preselected.
+          </div>
+          <div style={{ display: "flex", gap: space[2], flexWrap: "wrap", marginBottom: space[5] }}>
+            {trackNames.map(t => {
+              const sel = resumeTracks.includes(t);
+              const phColor = pc[t] || c.textDim;
+              return (
+                <button key={t} type="button" onClick={() => setResumeTracks(prev => sel ? prev.filter(x => x !== t) : [...prev, t])} style={{
+                  padding: `8px 16px`, borderRadius: layout.radiusSm,
+                  background: sel ? phColor + "18" : c.surfaceAlt,
+                  border: `1.5px solid ${sel ? phColor : c.border}`,
+                  color: sel ? phColor : c.textMid,
+                  fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
+                  letterSpacing: "0.04em", cursor: "pointer",
+                  transition: `all ${motion.fast.duration} ${motion.fast.easing}`,
+                }}>{t}</button>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: space[3], justifyContent: "flex-end" }}>
+            <Btn variant="ghost" size="sm" onClick={() => setResumeModal(null)}>Cancel</Btn>
+            <Btn variant="primary" size="sm" disabled={resumeTracks.length === 0} onClick={() => {
+              const kind = resumeModal.kind;
+              resumeProject(kind, resumeTracks);
+              updateProjectInDB(proj.id, kind === "blocked"
+                ? { isBlocked: false, blockedReason: null, blockedAt: null, status: "in_flight" }
+                : { status: "in_flight", depriReason: null });
+              recordAction(kind === "blocked" ? "project_unblocked" : "project_status_changed",
+                { from: kind === "blocked" ? "blocked" : "deprioritized", to: "in_flight", tracks: resumeTracks.join(", ") },
+                `${proj.name} resumed with ${resumeTracks.join(", ")}`);
+              setResumeModal(null);
+            }}>Resume</Btn>
+          </div>
+        </Modal>
+      )}
 
       {/* ═══ DELETE CONFIRMATION MODAL ═══ */}
       <Modal open={deleteModal} onClose={() => {
