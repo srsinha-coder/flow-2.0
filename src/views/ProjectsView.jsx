@@ -1842,13 +1842,16 @@ export default function ProjectsView({
                                   {fmtDate(displayEnd)}
                                 </span>
                               </div>
-                              <div style={{ height: 3, borderRadius: 2, background: c.border, overflow: "hidden", width: "100%" }}>
-                                <div style={{
-                                  height: "100%", borderRadius: 2, width: `${Math.min(pct, 100)}%`,
-                                  background: m.overdue ? c.red : pct > 85 ? c.amber : c.green,
-                                  transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
-                                }} />
-                              </div>
+                              {/* Progress line — shipped=green, overdue=red, in-flight=yellow. Blocked shows no line. */}
+                              {!isBlockedProj && (
+                                <div style={{ height: 3, borderRadius: 2, background: c.border, overflow: "hidden", width: "100%" }}>
+                                  <div style={{
+                                    height: "100%", borderRadius: 2, width: `${Math.min(pct, 100)}%`,
+                                    background: isShipped ? c.green : m.overdue ? c.red : "#EAB308",
+                                    transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
+                                  }} />
+                                </div>
+                              )}
                             </div>
                           );
                         })()}
@@ -2986,7 +2989,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
             Deprioritized
           </span>
           {proj.deprioritizedAt && (
-            <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, color: c.amber, flexShrink: 0 }}>since {fmtDate(proj.deprioritizedAt.slice(0, 10))}</span>
+            <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, color: c.amber, flexShrink: 0 }}>on {fmtDate(proj.deprioritizedAt.slice(0, 10))}</span>
           )}
           <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, color: c.textMid, lineHeight: 1.5, flex: 1 }}>
             {proj.depriReason || <span style={{ color: c.textDim, fontStyle: "italic" }}>No reason provided.</span>}

@@ -1482,6 +1482,44 @@ import { migrateProjectToTracks, derivePrimaryPhase } from '../lib/tracks';
     };
   }
 
+  // ── Demo block / deprioritize history so timeline lines are visible ──
+  // Each blocked/depri project gets a resolved past period (red line + resume
+  // line) plus the current open period (red/grey line at the latest date).
+  const x03b = byId("X03");
+  if (x03b) {
+    x03b.blockedTracks = ["QA"];
+    x03b.statusHistory = [
+      { type: "blocked", from: isoAgo(26 * DAY), to: isoAgo(19 * DAY) },
+      { type: "blocked", from: x03b.blockedAt || isoAgo(5 * DAY), to: null },
+    ];
+  }
+  const x12b = byId("X12");
+  if (x12b) {
+    x12b.blockedTracks = ["Dev"];
+    x12b.statusHistory = [
+      { type: "blocked", from: isoAgo(20 * DAY), to: isoAgo(14 * DAY) },
+      { type: "blocked", from: x12b.blockedAt || isoAgo(3 * DAY), to: null },
+    ];
+  }
+  const x06d = byId("X06");
+  if (x06d) {
+    x06d.deprioritizedAt = isoAgo(8 * DAY);
+    x06d.blockedTracks = ["Dev"];
+    x06d.statusHistory = [
+      { type: "deprioritized", from: isoAgo(28 * DAY), to: isoAgo(20 * DAY) },
+      { type: "deprioritized", from: isoAgo(8 * DAY), to: null },
+    ];
+  }
+  const x15d = byId("X15");
+  if (x15d) {
+    x15d.deprioritizedAt = isoAgo(12 * DAY);
+    x15d.blockedTracks = ["Design"];
+    x15d.statusHistory = [
+      { type: "deprioritized", from: isoAgo(30 * DAY), to: isoAgo(22 * DAY) },
+      { type: "deprioritized", from: isoAgo(12 * DAY), to: null },
+    ];
+  }
+
   // Recompute derived phase for all modified projects
   for (const p of seedProjects) {
     p.phase = derivePrimaryPhase(p);

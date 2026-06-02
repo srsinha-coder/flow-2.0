@@ -202,6 +202,38 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
         <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
           {(proj.startDate || proj.endDate || proj.tentativeStartDate) && (() => {
             const milestone = getReleaseMilestone(proj);
+            const history = proj.statusHistory || [];
+            const hasHistory = history.length > 0;
+
+            if (hasHistory) {
+              // Segmented: start → first pause date (red/grey) | last resume → end
+              const sorted = [...history].sort((a, b) => toDay(a.from) - toDay(b.from));
+              const firstPause = sorted[0];
+              const lastResume = [...sorted].reverse().find(h => h.to)?.to || null;
+              const pauseColor = firstPause.type === "blocked" ? c.red : c.textDim;
+              // Total active days = total span minus sum of paused durations
+              const startMs = toDay(proj.startDate || proj.tentativeStartDate);
+              const endMs = toDay(proj.endDate) || Date.now();
+              let pausedMs = 0;
+              for (const h of history) {
+                const f = toDay(h.from); const t = h.to ? toDay(h.to) : Date.now();
+                if (f && t > f) pausedMs += t - f;
+              }
+              const activeDays = Math.max(0, Math.round(((endMs - startMs) - pausedMs) / DAY_MS));
+              return (
+                <span style={{
+                  fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
+                  color: c.textMid, fontVariantNumeric: "tabular-nums",
+                }}>
+                  {fmtShort(proj.startDate || proj.tentativeStartDate)}
+                  {" → "}
+                  <span style={{ color: pauseColor, fontWeight: 700 }}>{fmtShort(firstPause.from)}</span>
+                  {lastResume && <>{"  |  "}{fmtShort(lastResume)}{" → "}{fmtShort(proj.endDate)}</>}
+                  <span style={{ color: c.textDim, fontWeight: 500 }}>{"  ["}{activeDays} active days{"]"}</span>
+                </span>
+              );
+            }
+
             return (
               <span style={{
                 fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
@@ -341,14 +373,11 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                 {trackData?.periods?.map((period, pi) => {
                   const pos = barStyle(period.started_at, period.completed_at);
                   const isDone = !!period.completed_at;
-                  // Periods started at/after the latest resume render green
-                  const isResumed = resumeDate && toDay(period.started_at) >= toDay(resumeDate);
-                  const barColor = isResumed ? c.green : color;
                   return (
                     <div key={pi} style={{
                       position: "absolute", top: 8, height: ROW_H - 16,
                       ...pos,
-                      background: isDone ? `${barColor}50` : barColor,
+                      background: isDone ? `${color}50` : color,
                       borderRadius: 4, minWidth: 4, zIndex: 1,
                     }} />
                   );
@@ -452,12 +481,14 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
         }}>
           {(proj.statusHistory || []).filter(h => h.to).map((h, i) => (
             <div key={`hist-${i}`} style={{
-              display: "flex", alignItems: "center", gap: space[2],
+              display: "flex", alignItems: "center", gap: 6,
+              paddingLeft: space[3],
               fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid,
             }}>
               <span style={{
-                width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-                background: h.type === "blocked" ? c.red : c.amber,
+                width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                marginRight: 2,
+                background: h.type === "blocked" ? c.red : c.textDim,
               }} />
               This project was {h.type === "blocked" ? "blocked" : "deprioritized"} from{" "}
               <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.from)}</strong> to{" "}
