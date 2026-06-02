@@ -1697,7 +1697,7 @@ export default function ProjectsView({
                         padding: `${space[3]}px ${space[4]}px`,
                         borderBottom: cellBorder,
                         fontFamily: typo.bodyMd.font, fontSize: 14,
-                        fontWeight: 500, color: proj.owner ? c.cyan : c.textDim,
+                        fontWeight: 500, color: proj.owner ? c.text : c.textDim,
                         whiteSpace: "nowrap",
                       }}>{proj.owner || "Unassigned"}</td>
 
