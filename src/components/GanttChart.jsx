@@ -162,6 +162,25 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
   return (
     <div ref={devRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden", borderRadius: layout.radius, border: `1px solid ${c.border}` }}>
 
+      {/* ── Legend ── */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: space[4], flexShrink: 0,
+        padding: `${space[2]}px ${space[4]}px`,
+        borderBottom: `1px solid ${c.border}`, background: c.bg,
+      }}>
+        {[
+          { label: "Shipped", swatch: { background: SHIPPED_BAR_COLOR } },
+          { label: "In flight", swatch: { background: BAR_COLOR } },
+          { label: "Blocked", swatch: { background: "#ef4444" } },
+          { label: "Deprioritized", swatch: { background: `repeating-linear-gradient(-45deg, #9ca3af, #9ca3af 3px, #d1d5db 3px, #d1d5db 6px)` } },
+        ].map(item => (
+          <span key={item.label} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 14, height: 10, borderRadius: 3, ...item.swatch }} />
+            <span style={{ fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, color: c.textMid }}>{item.label}</span>
+          </span>
+        ))}
+      </div>
+
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
       {/* ── LEFT PANEL (frozen) ── */}
       <div ref={leftRef} onScroll={onLeftScroll} style={{
@@ -297,9 +316,9 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                 const segEnd = Math.min(t, barEndMs);
                 if (segEnd <= segStart) continue;
                 statusSegments.push({
-                  leftPct: ((segStart - barStartMs) / barSpan) * 100,
-                  widthPct: ((segEnd - segStart) / barSpan) * 100,
-                  color: h.type === "blocked" ? "#ef4444" : "#9ca3af",
+                  type: h.type,
+                  leftPx: left + ((segStart - barStartMs) / barSpan) * width,
+                  widthPx: ((segEnd - segStart) / barSpan) * width,
                 });
               }
             }
@@ -335,14 +354,6 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                     position: "absolute", inset: 0, borderRadius: 5,
                     background: barFill,
                   }} />
-                  {/* Status segments — red blocked, grey deprioritized */}
-                  {statusSegments.map((s, si) => (
-                    <div key={si} style={{
-                      position: "absolute", top: 0, bottom: 0,
-                      left: `${s.leftPct}%`, width: `${s.widthPct}%`,
-                      background: s.color, zIndex: 1,
-                    }} />
-                  ))}
                   {/* Track labels on bar */}
                   {(active.length > 0 || isShipped) && (
                     <span style={{
@@ -357,6 +368,23 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                     </span>
                   )}
                 </div>
+
+                {/* Bigger blocked / deprioritized blocks — overlay above the bar */}
+                {statusSegments.map((s, si) => (
+                  <div key={`seg-${si}`}
+                    title={s.type === "blocked" ? "Blocked" : "Deprioritized"}
+                    style={{
+                      position: "absolute", top: 8, height: 32,
+                      left: s.leftPx, width: Math.max(4, s.widthPx),
+                      borderRadius: 5, zIndex: 4, pointerEvents: "none",
+                      ...(s.type === "blocked"
+                        ? { background: "#ef4444", border: "1px solid #dc2626" }
+                        : {
+                            background: `repeating-linear-gradient(-45deg, #9ca3af, #9ca3af 4px, #d1d5db 4px, #d1d5db 8px)`,
+                            border: "1px solid #9ca3af",
+                          }),
+                    }} />
+                ))}
 
                 {/* Shipped rocket marker — positioned at the end of the bar */}
                 {(p.phase === "GA" || p.status === "complete") && (
