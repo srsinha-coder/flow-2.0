@@ -320,15 +320,15 @@ export async function reopenTrackInDB(projectId, trackName, projectsRef, extraDe
 // at `at`, and writes a phase/track event stamped with that same past date so it
 // lands in the timeline at the correct point. `from` may be null for a plain
 // "add track". `action` is "project_phase_changed" (default) or "track_started".
-export async function recordBackdatedTrackInDB(projectId, { from = null, to, at, reason = null, note = null, action = 'project_phase_changed' }, projectsRef) {
+export async function recordBackdatedTrackInDB(projectId, { from = null, to, at, endAt = null, reason = null, note = null, action = 'project_phase_changed', backdated = true }, projectsRef) {
   const details = action === 'track_started'
-    ? { track: to, backdated: true, note }
-    : { from, to, backdated: true, reason, note };
+    ? { track: to, backdated, note }
+    : { from, to, backdated, reason, note };
 
   if (isDevSeedMode()) {
     const proj = projectsRef?.find(p => p.id === projectId);
     if (proj) {
-      proj.tracks = applyBackdatedTransition(proj.tracks || {}, from, to, at);
+      proj.tracks = applyBackdatedTransition(proj.tracks || {}, from, to, at, endAt, backdated);
       proj.phase = derivePrimaryPhase(proj);
       if (proj.status === 'upcoming') proj.status = 'in_flight';
       devStore.persistProjects(projectsRef);
@@ -337,7 +337,7 @@ export async function recordBackdatedTrackInDB(projectId, { from = null, to, at,
     return { ok: true };
   }
   const { data: cur } = await supabase.from('projects').select('tracks, status').eq('id', projectId).maybeSingle();
-  const tracks = applyBackdatedTransition(cur?.tracks || {}, from, to, at);
+  const tracks = applyBackdatedTransition(cur?.tracks || {}, from, to, at, endAt, backdated);
   const phase = derivePrimaryPhase({ tracks });
   const update = { tracks, phase };
   if (cur?.status === 'upcoming') update.status = 'in_flight';

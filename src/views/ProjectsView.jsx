@@ -878,10 +878,10 @@ export default function ProjectsView({
       }}>
 
         {/* ═══════════════════════════════════════════════════════════
-            KPI GRID — 4 cards (Active / At Risk / Overdue / Shipped)
+            KPI GRID — In Flight / Shipped / At Risk / Deprioritized
             Steel & Orange pattern per design-directions.html §KPI CARDS
             ═══════════════════════════════════════════════════════════ */}
-        {viewMode !== "board" && viewMode !== "gantt" && <KpiGrid cols="1fr 1fr 1fr">
+        {viewMode !== "board" && viewMode !== "gantt" && <KpiGrid cols="1fr 1fr 1fr 1fr">
           <KpiCard
             index={0}
             label="In Flight"
@@ -923,6 +923,17 @@ export default function ProjectsView({
             <PillRow>
               <Pill count={summary.blocked} label="Blocked" color={c.red} />
               <Pill count={summary.overdue} label="Overdue" color={c.amber} />
+            </PillRow>
+          </KpiCard>
+          <KpiCard
+            index={3}
+            label="Deprioritized"
+            value={summary.depri}
+            onClick={() => setActiveTab(activeTab === "deprioritized" ? "all" : "deprioritized")}
+            active={activeTab === "deprioritized"}
+          >
+            <PillRow>
+              <Pill count={summary.depri} label="On hold" color={c.textDim} />
             </PillRow>
           </KpiCard>
         </KpiGrid>}
@@ -2513,7 +2524,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [blockedReasonModal, setBlockedReasonModal] = useState(false);
   const [blockedReasonText, setBlockedReasonText] = useState("");
   const [showOverrides, setShowOverrides] = useState(false);
-  const [stagePickerOpen, setStagePickerOpen] = useState(false);
   const [startNowModal, setStartNowModal] = useState(false);
   const [startNowTracks, setStartNowTracks] = useState(["PRD"]);
   const [startNowEndDate, setStartNowEndDate] = useState("");
@@ -2564,8 +2574,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
   const [addTrackModal, setAddTrackModal] = useState(false);
   const [addTrackPhase, setAddTrackPhase] = useState("");
-  const [addTrackDate, setAddTrackDate] = useState(today);
-  const [addTrackTime, setAddTrackTime] = useState("12:00");
+  const [addTrackStart, setAddTrackStart] = useState(today);   // defaults to today, editable
+  const [addTrackEnd, setAddTrackEnd] = useState("");          // optional — leave blank for an ongoing track
   const [addTrackNote, setAddTrackNote] = useState("");
 
   const openMissedModal = useCallback(() => {
@@ -2573,43 +2583,50 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
     setMissedModal(true);
   }, [today]);
   const openAddTrackModal = useCallback(() => {
-    setAddTrackPhase(""); setAddTrackDate(today); setAddTrackTime("12:00"); setAddTrackNote("");
+    setAddTrackPhase(""); setAddTrackStart(today); setAddTrackEnd(""); setAddTrackNote("");
     setAddTrackModal(true);
   }, [today]);
 
-  // Shared writer for both backdating modals: optimistic React update + persist
-  // via the mutations layer (dev seed or Supabase) + immediate timeline refresh.
-  const applyBackdated = useCallback(({ from = null, to, at, reason = null, note = null, action }) => {
+  // Shared writer for the transition / add-track modals: optimistic React update
+  // + persist via the mutations layer (dev seed or Supabase) + timeline refresh.
+  // `backdated` controls whether the entry is tagged as retroactively logged.
+  const applyBackdated = useCallback(({ from = null, to, at, endAt = null, reason = null, note = null, action, backdated = true }) => {
     setProjects(prev => prev.map(p => {
       if (p.id !== proj.id) return p;
-      const tracks = applyBackdatedTransition(p.tracks, from, to, at);
+      const tracks = applyBackdatedTransition(p.tracks, from, to, at, endAt, backdated);
       const updated = { ...p, tracks, lastActivityAt: new Date().toISOString() };
       updated.phase = derivePrimaryPhase(updated);
       if (updated.status === "upcoming") updated.status = "in_flight";
       return updated;
     }));
-    recordBackdatedTrackInDB(proj.id, { from, to, at, reason, note, action }, projects);
-    setPhaseTransitions(prev =>
-      [...prev, { at, phase: to, by: personProfile?.name || "You", backdated: true }]
-        .sort((a, b) => new Date(a.at) - new Date(b.at))
-    );
+    recordBackdatedTrackInDB(proj.id, { from, to, at, endAt, reason, note, action, backdated }, projects);
+    // Only an open (ongoing) track defines the current phase on the timeline.
+    if (!endAt) {
+      setPhaseTransitions(prev =>
+        [...prev, { at, phase: to, by: personProfile?.name || "You", backdated }]
+          .sort((a, b) => new Date(a.at) - new Date(b.at))
+      );
+    }
   }, [proj.id, projects, setProjects, personProfile]);
 
   const saveMissedTransition = useCallback(() => {
     if (!missedTo) return;
     const at = backdatedISO(missedDate, missedTime);
-    applyBackdated({ from: missedFrom || null, to: missedTo, at, reason: missedReason.trim() || null, action: "project_phase_changed" });
+    applyBackdated({ from: missedFrom || null, to: missedTo, at, reason: missedReason.trim() || null, action: "project_phase_changed", backdated: true });
     setMissedModal(false);
     window.__flowToast?.(`Logged ${missedFrom ? missedFrom + " → " : ""}${missedTo} (backdated)`);
   }, [missedTo, missedFrom, missedDate, missedTime, missedReason, applyBackdated]);
 
   const saveAddTrack = useCallback(() => {
     if (!addTrackPhase) return;
-    const at = backdatedISO(addTrackDate, addTrackTime);
-    applyBackdated({ from: null, to: addTrackPhase, at, note: addTrackNote.trim() || null, action: "track_started" });
+    const at = backdatedISO(addTrackStart, "12:00");
+    // Optional end date → log a track that already ran to completion (ignored if before start).
+    const endAt = (addTrackEnd && addTrackEnd >= addTrackStart) ? backdatedISO(addTrackEnd, "12:00") : null;
+    const isBackdated = addTrackStart < today; // only flag as backdated when the start is in the past
+    applyBackdated({ from: null, to: addTrackPhase, at, endAt, note: addTrackNote.trim() || null, action: "track_started", backdated: isBackdated });
     setAddTrackModal(false);
-    window.__flowToast?.(`${addTrackPhase} track logged`);
-  }, [addTrackPhase, addTrackDate, addTrackTime, addTrackNote, applyBackdated]);
+    window.__flowToast?.(`${addTrackPhase} track ${endAt ? "logged" : "started"}`);
+  }, [addTrackPhase, addTrackStart, addTrackEnd, addTrackNote, applyBackdated, today]);
 
   // Resources IIFE states — hoisted to component level to avoid conditional hook ordering
   const [resAdding, setResAdding] = useState(false);
@@ -3256,7 +3273,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                         ) : null}
                         {/* + Track button */}
                         {proj.status !== "shipped" && can.manageTracks(projRole) && (
-                          <button id="add-track-btn" type="button" onClick={() => setStagePickerOpen(v => !v)} style={{
+                          <button id="add-track-btn" type="button" onClick={openAddTrackModal} style={{
                             display: "inline-flex", alignItems: "center", gap: 4,
                             padding: `4px 10px`, borderRadius: 999,
                             background: "transparent", border: `1px dashed ${c.border}`,
@@ -3270,71 +3287,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                       </>
                     );
                   })()}
-                  {stagePickerOpen && createPortal(
-                    <>
-                      <div style={{ position: "fixed", inset: 0, zIndex: 99999 }} onClick={() => setStagePickerOpen(false)} />
-                      <div style={{
-                        position: "fixed", zIndex: 100000,
-                        top: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().bottom + 4 : 0; })(),
-                        left: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().left : 0; })(),
-                        background: c.surfaceSolid, border: `1px solid ${c.border}`, borderRadius: layout.radiusSm,
-                        boxShadow: c.shadowElevated, padding: space[1], minWidth: 140,
-                        display: "flex", flexDirection: "column",
-                      }}>
-                        {trackNames.map(t => {
-                          const tStatus = getTrackStatus(proj, t);
-                          const phColor = getPhaseColors()[t] || c.textMid;
-                          const isActive = tStatus === "active";
-                          return (
-                            <button key={t} type="button" onClick={() => {
-                              if (!isActive) {
-                                setStagePickerOpen(false);
-                                if (t === "Alpha" || t === "Beta") {
-                                  setShipNote(proj.shipNote || "");
-                                  setShipPct(proj.shipPct != null ? String(proj.shipPct) : "");
-                                  setShipPhaseModal({ phase: t, from: proj.phase, isTrackStart: true });
-                                  return;
-                                }
-                                startTrackInDB(proj.id, t, projects);
-                                setProjects(prev => {
-                                  const copy = prev.map(p => {
-                                    if (p.id !== proj.id) return p;
-                                    const updated = { ...p, tracks: { ...p.tracks } };
-                                    if (!updated.tracks[t]) updated.tracks[t] = { periods: [], owner: null };
-                                    updated.tracks[t] = { ...updated.tracks[t], periods: [...updated.tracks[t].periods, { started_at: new Date().toISOString(), completed_at: null }] };
-                                    updated.phase = derivePrimaryPhase(updated);
-                                    if (updated.status === "upcoming") updated.status = "in_flight";
-                                    return updated;
-                                  });
-                                  return copy;
-                                });
-                                window.__flowToast?.(`${t} track started`);
-                              }
-                              setStagePickerOpen(false);
-                            }} disabled={isActive} style={{
-                              padding: `6px 12px`, borderRadius: layout.radiusXs,
-                              background: isActive ? c.surfaceAlt : "transparent",
-                              border: "none", cursor: isActive ? "default" : "pointer", textAlign: "left",
-                              fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: isActive ? 700 : 500,
-                              color: isActive ? phColor : c.text,
-                              opacity: isActive ? 0.5 : 1,
-                              display: "flex", alignItems: "center", gap: space[2],
-                              transition: "background 80ms ease",
-                            }}
-                              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = c.surfaceAlt; }}
-                              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-                            >
-                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: phColor, flexShrink: 0 }} />
-                              {t}
-                              {isActive && <span style={{ marginLeft: "auto", fontSize: 10, color: c.textDim }}>active</span>}
-                              {tStatus === "completed" && <span style={{ marginLeft: "auto", fontSize: 10, color: c.green }}>done</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>,
-                    document.body
-                  )}
                 </div>
               </div>
               {can.changeStatus(projRole) && <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
@@ -3978,22 +3930,13 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       {/* ═══ TIMELINE — TrackGantt then alerts below ═══ */}
       {proj.status !== "upcoming" && <div data-tour="track-gantt">
         <SectionHead title="Timeline" right={can.manageTracks(projRole) ? (
-          <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-            <button type="button" onClick={openMissedModal} style={{
-              display: "flex", alignItems: "center", gap: 5,
-              padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
-              border: `1px solid ${c.border}`, background: c.surfaceAlt,
-              color: c.textMid, cursor: "pointer",
-              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-            }}>⤺ Log missed transition</button>
-            <button type="button" onClick={openAddTrackModal} style={{
-              display: "flex", alignItems: "center", gap: 5,
-              padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
-              border: `1px solid ${c.accent}40`, background: c.accentDim,
-              color: c.accent, cursor: "pointer",
-              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-            }}>+ Add track</button>
-          </div>
+          <button type="button" onClick={openMissedModal} style={{
+            display: "flex", alignItems: "center", gap: 5,
+            padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
+            border: `1px solid ${c.border}`, background: c.surfaceAlt,
+            color: c.textMid, cursor: "pointer",
+            fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+          }}>⤺ Log missed transition</button>
         ) : null} />
 
         {/* ── Track Gantt (parallel tracks) ── */}
@@ -4212,10 +4155,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
         </div>
       </Modal>
 
-      {/* ═══ ADD TRACK — start a phase, with backdating support ═══ */}
+      {/* ═══ ADD TRACK — start a phase (start date defaults to today, optional end) ═══ */}
       <Modal open={addTrackModal} onClose={() => setAddTrackModal(false)} title="Add track" accent={c.accent}>
         <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodySm.size, color: c.textMid, lineHeight: 1.5, marginBottom: space[4] }}>
-          Start a track now, or backdate it to when work actually began.
+          Start a track. The start date defaults to today — edit it to log when work actually began. Leave the end date blank for an ongoing track.
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
           <div>
@@ -4227,12 +4170,12 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           </div>
           <div style={{ display: "flex", gap: space[3] }}>
             <div style={{ flex: 1 }}>
-              <Label style={{ marginBottom: space[1] }}>Date</Label>
-              <Inp type="date" value={addTrackDate} max={today} onChange={e => setAddTrackDate(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+              <Label style={{ marginBottom: space[1] }}>Start date</Label>
+              <Inp type="date" value={addTrackStart} max={today} onChange={e => setAddTrackStart(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
             </div>
             <div style={{ flex: 1 }}>
-              <Label style={{ marginBottom: space[1] }}>Time</Label>
-              <Inp type="time" value={addTrackTime} onChange={e => setAddTrackTime(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+              <Label style={{ marginBottom: space[1] }}>End date <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+              <Inp type="date" value={addTrackEnd} min={addTrackStart} max={today} onChange={e => setAddTrackEnd(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
             </div>
           </div>
           <div>
