@@ -1608,9 +1608,8 @@ const AnimStyles = () => (
        BREADCRUMB + NAV
        ═══════════════════════════════════════════════════════════════ */
     .flow-breadcrumb:hover {
-      color: ${c.accent} !important;
-      text-decoration: underline;
-      text-underline-offset: 3px;
+      color: #FFFFFF !important;
+      text-decoration: none;
     }
     .flow-nav-item:hover {
       background: ${c.surfaceAlt} !important;
