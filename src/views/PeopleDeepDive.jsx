@@ -54,6 +54,7 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
   const [kbActive, setKbActive] = useState(false);
   const localSearchRef = useRef(null);
   const [showAddMember, setShowAddMember] = useState(false);
+  const [teamHealthOpen, setTeamHealthOpen] = useState(false); // collapsed by default; expand on click
 
   const allSquads = [...new Set(people.map(p => p.squad).filter(Boolean))].sort();
   const allRoles = [...new Set(people.map(p => p.role).filter(Boolean))].sort();
@@ -309,7 +310,14 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
               padding: `${space[4]}px`,
               display: "flex", flexDirection: "column", gap: space[2],
             }}>
-              <div style={{ display: "flex", alignItems: "center", gap: space[2], marginBottom: space[1] }}>
+              <div
+                role="button" tabIndex={0}
+                aria-expanded={teamHealthOpen}
+                aria-label={`Team Health — ${flags.length} alert${flags.length === 1 ? "" : "s"}. Click to ${teamHealthOpen ? "collapse" : "expand"}.`}
+                onClick={() => setTeamHealthOpen(o => !o)}
+                onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTeamHealthOpen(o => !o); } }}
+                style={{ display: "flex", alignItems: "center", gap: space[2], cursor: "pointer", userSelect: "none", marginBottom: teamHealthOpen ? space[1] : 0 }}
+              >
                 <span style={{
                   fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700,
                   letterSpacing: "0.08em", color: c.text, textTransform: "uppercase",
@@ -324,9 +332,21 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                     {counts.info > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.textDim }}>● {counts.info}</span>}
                   </div>
                 )}
+                {/* Collapsed hint + chevron, pushed right */}
+                <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: space[2] }}>
+                  {!teamHealthOpen && (
+                    <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textDim }}>
+                      {flags.length === 0 ? "no risks" : `${flags.length} alert${flags.length === 1 ? "" : "s"} — show`}
+                    </span>
+                  )}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.textMid} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ transform: teamHealthOpen ? "rotate(180deg)" : "rotate(0deg)", transition: `transform ${motion.fast.duration} ${motion.fast.easing}`, flexShrink: 0 }}>
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
               </div>
 
-              {flags.length === 0 ? (
+              {!teamHealthOpen ? null : flags.length === 0 ? (
                 <div style={{
                   display: "flex", alignItems: "center", gap: space[2],
                   padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
