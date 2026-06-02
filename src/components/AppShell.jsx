@@ -158,7 +158,7 @@ function TimeframePicker({ timeframe, setTimeframe }) {
           background: c.surfaceSolid,
           borderRadius: layout.radiusMd,
           border: `1px solid ${c.border}`,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06)",
+          boxShadow: c.shadowFloat,
           minWidth: 260,
           overflow: "hidden",
         }}>
@@ -1815,7 +1815,7 @@ function UserBadge({ user, personProfile, personName, onSignOut, onRefreshProfil
           background: c.surfaceSolid,
           border: `1px solid ${c.border}`,
           borderRadius: layout.radiusMd,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)",
+          boxShadow: c.shadowFloat,
           zIndex: 200,
           animation: "fadeScaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
         }}>

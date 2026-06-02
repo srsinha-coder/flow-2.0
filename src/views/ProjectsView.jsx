@@ -3326,8 +3326,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                         position: "fixed", zIndex: 100000,
                         top: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().bottom + 4 : 0; })(),
                         left: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().left : 0; })(),
-                        background: c.surfaceSolid, border: `1px solid ${c.border}`, borderRadius: layout.radiusSm,
-                        boxShadow: c.shadowElevated, padding: space[1], minWidth: 140,
+                        background: c.surfaceSolid, border: `1px solid ${c.border}`, borderRadius: layout.radiusMd,
+                        boxShadow: c.shadowFloat, padding: space[1], minWidth: 140,
                         display: "flex", flexDirection: "column",
                       }}>
                         {trackNames.map(t => {

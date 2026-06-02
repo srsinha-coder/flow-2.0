@@ -365,7 +365,7 @@ export const ChoiceGroup = ({ options, value, onChange, mono = false, label }) =
 // ══════════════════════════════════════════════════════════════
 // Sel — select dropdown (matches Inp height)
 // ══════════════════════════════════════════════════════════════
-const selChevron = `url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 16 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='4 6 8 10 12 6' stroke='%237E7E8A' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
+const selChevron = `url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 16 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='4 6 8 10 12 6' stroke='%23999999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
 export { selChevron };
 export const Sel = ({ children, style: s, ...rest }) => (
   <select {...rest} className="flow-input" style={{
@@ -460,7 +460,7 @@ export const SearchSelect = ({ value, onChange, options, placeholder = "Search..
         <div ref={dropdownRef} style={{
           position: "fixed", top: dropPos.top, left: dropPos.left, width: dropPos.width,
           background: c.surfaceSolid, border: `1px solid ${c.border}`,
-          borderRadius: layout.radiusSm, boxShadow: c.shadowOverlay,
+          borderRadius: layout.radiusMd, boxShadow: c.shadowFloat,
           zIndex: 10000, maxHeight: 240, display: "flex", flexDirection: "column",
         }}>
           <div style={{ padding: `${space[2]}px ${space[2]}px 0` }}>
