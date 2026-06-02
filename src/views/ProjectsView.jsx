@@ -545,9 +545,11 @@ export default function ProjectsView({
       }
     }
     const sorted = sortList(list, sortKey, sortDir, metrics, today);
+    // Alpha/Beta active projects are grouped with shipped (they're a release).
+    const hasReleased = (p) => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
     const pinned = sorted.filter(p => pinnedIds.has(p.id));
-    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "shipped");
-    const regular = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "in_flight");
+    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && (p.status === "shipped" || (p.status === "in_flight" && hasReleased(p))));
+    const regular = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "in_flight" && !hasReleased(p));
     const blocked = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "blocked");
     const depri = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "deprioritized");
     const upcoming = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "upcoming")
@@ -1580,9 +1582,10 @@ export default function ProjectsView({
                   const isUpcoming = proj.status === "upcoming";
                   const isPinned = pinnedIds.has(proj.id);
                   const isShipped = proj.status === "shipped";
+                  const hasReleasedTrack = (m.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
                   const isBlockedProj = proj.status === "blocked" || m.isBlocked;
                   const isBlockedOrOverdue = isBlockedProj || m.overdue;
-                  const leftBarColor = isShipped ? c.green : isBlockedOrOverdue ? c.red : null;
+                  const leftBarColor = (isShipped || hasReleasedTrack) ? c.green : isBlockedOrOverdue ? c.red : null;
 
                   const cellBorder = "1px solid rgba(0,0,0,0.03)";
                   const rowBg = isFocused ? `${c.accent}10` : isHovered ? "rgba(0,0,0,0.012)" : c.surface;
