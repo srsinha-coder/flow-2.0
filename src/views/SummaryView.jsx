@@ -65,7 +65,7 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
 // Used for WoW/MoM KPI deltas. Only shipped_at gives a precise transition point;
 // everything else stays at current status.
 function computeCountsAt(projects, dateMs) {
-  let active = 0, shipped = 0, blocked = 0, overdue = 0;
+  let active = 0, shipped = 0, blocked = 0, overdue = 0, deprioritized = 0;
   projects.forEach(p => {
     const createdMs = new Date(p.createdAt || p.created_at || 0).getTime();
     if (createdMs > dateMs) return;
@@ -76,11 +76,12 @@ function computeCountsAt(projects, dateMs) {
     if (histStatus === "in_flight") active++;
     else if (histStatus === "shipped") shipped++;
     else if (histStatus === "blocked") blocked++;
+    else if (histStatus === "deprioritized") deprioritized++;
     if (p.endDate && histStatus !== "shipped" && histStatus !== "deprioritized") {
       if (new Date(p.endDate + "T00:00:00").getTime() < dateMs) overdue++;
     }
   });
-  return { active, shipped, needsAttention: blocked + overdue };
+  return { active, shipped, deprioritized, needsAttention: blocked + overdue };
 }
 
 // Builds the "This Week at a Glance" digest as structured data (not strings),
@@ -240,10 +241,13 @@ const TIMELINE_OPTIONS = [
 
 // Colored ↑/↓/= chip for WoW/MoM deltas.
 // inverted=true flips the color semantics (down = good, e.g. Needs Attention).
-const DeltaChip = ({ delta, label, inverted = false }) => {
+// muted=true forces a neutral gray (for the Deprioritized "graveyard" card,
+// where an increase is neither good nor bad).
+const DeltaChip = ({ delta, label, inverted = false, muted = false }) => {
   if (!Number.isFinite(delta)) return null;
   const isZero = delta === 0;
-  const color = isZero ? c.textGhost
+  const color = muted ? c.textMid
+    : isZero ? c.textGhost
     : (delta > 0) === !inverted ? c.green : c.red;
   return (
     <span style={{
@@ -395,11 +399,13 @@ const SummaryView = ({
     [filteredProjects, phaseDurationDefaults]
   );
 
-  // Fixed reference dates (set once on mount) for stable WoW/MoM diffs.
+  // Fixed reference dates (set once on mount) for stable WoW/MoM/QoQ diffs.
   const weekAgoMs = useMemo(() => Date.now() - 7 * 86_400_000, []);
   const monthAgoMs = useMemo(() => Date.now() - 30 * 86_400_000, []);
+  const quarterAgoMs = useMemo(() => Date.now() - 90 * 86_400_000, []);
   const histWoW = useMemo(() => computeCountsAt(filteredProjects, weekAgoMs), [filteredProjects, weekAgoMs]);
   const histMoM = useMemo(() => computeCountsAt(filteredProjects, monthAgoMs), [filteredProjects, monthAgoMs]);
+  const histQoQ = useMemo(() => computeCountsAt(filteredProjects, quarterAgoMs), [filteredProjects, quarterAgoMs]);
 
   const allSquadNames = useMemo(() =>
     (squads && squads.length ? [...squads] : [...new Set(filteredProjects.map(p => p.squad).filter(Boolean))]).sort(),
@@ -501,29 +507,31 @@ const SummaryView = ({
       {/* ═══ STATUS KPI CARDS ═══ */}
       <KpiGrid cols="1fr 1fr 1fr 1fr">
         <KpiCard index={0} label="In Flight" value={metrics.active.length} sub="active projects">
-          <div style={{ display: "flex", gap: space[3], marginTop: space[3] }}>
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
             <DeltaChip delta={metrics.active.length - histWoW.active} label="WoW" />
             <DeltaChip delta={metrics.active.length - histMoM.active} label="MoM" />
+            <DeltaChip delta={metrics.active.length - histQoQ.active} label="QoQ" />
           </div>
         </KpiCard>
         <KpiCard index={1} label="Shipped" value={metrics.shipped.length} sub="shipped projects">
-          <div style={{ display: "flex", gap: space[3], marginTop: space[3] }}>
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
             <DeltaChip delta={metrics.shipped.length - histWoW.shipped} label="WoW" />
             <DeltaChip delta={metrics.shipped.length - histMoM.shipped} label="MoM" />
+            <DeltaChip delta={metrics.shipped.length - histQoQ.shipped} label="QoQ" />
           </div>
         </KpiCard>
         <KpiCard index={2} label="Needs Attention" value={metrics.needsAttention} sub="blocked + overdue">
-          <div style={{ display: "flex", gap: space[3], marginTop: space[3] }}>
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
             <DeltaChip delta={metrics.needsAttention - histWoW.needsAttention} label="WoW" inverted />
             <DeltaChip delta={metrics.needsAttention - histMoM.needsAttention} label="MoM" inverted />
+            <DeltaChip delta={metrics.needsAttention - histQoQ.needsAttention} label="QoQ" inverted />
           </div>
         </KpiCard>
-        <KpiCard index={3} label="Deprioritized" value={metrics.deprioritized.length} sub="paused projects">
-          <div style={{ display: "flex", gap: space[3], marginTop: space[3] }}>
-            <span style={{
-              fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
-              color: c.textDim, fontVariantNumeric: "tabular-nums",
-            }}>on hold</span>
+        <KpiCard index={3} label="Deprioritized" value={metrics.deprioritized.length} sub="bandwidth or priority holds">
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
+            <DeltaChip delta={metrics.deprioritized.length - histWoW.deprioritized} label="WoW" muted />
+            <DeltaChip delta={metrics.deprioritized.length - histMoM.deprioritized} label="MoM" muted />
+            <DeltaChip delta={metrics.deprioritized.length - histQoQ.deprioritized} label="QoQ" muted />
           </div>
         </KpiCard>
       </KpiGrid>
