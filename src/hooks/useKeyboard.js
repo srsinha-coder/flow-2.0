@@ -22,6 +22,12 @@ export default function useKeyboard(bindings, deps = []) {
       const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable
         || !!target.closest?.("[data-suppress-shortcuts]");
 
+      // Never hijack OS clipboard / select-all / undo-redo shortcuts so copy,
+      // cut, paste, select-all, and undo always work in text fields.
+      if ((e.metaKey || e.ctrlKey) && ["c", "v", "x", "a", "z", "y"].includes(e.key?.toLowerCase())) {
+        return;
+      }
+
       for (const b of bindings) {
         const keyMatch = e.key === b.key || e.key === b.key?.toLowerCase();
         if (!keyMatch) continue;

@@ -483,7 +483,9 @@ function FlowDashboard({ auth }) {
     // Removed bare "f" shortcut — conflicted with typing F in any input across
     // the app (e.g. new-project name field). Cmd/Ctrl+K is the canonical way
     // to open the command palette.
-    { key: "/", fn: () => { if (searchRef.current) searchRef.current.focus(); }, force: true },
+    // No `force` — "/" should only focus search when NOT already typing in a
+    // field, otherwise it steals the slash key (and blocks pasting paths/URLs).
+    { key: "/", fn: () => { if (searchRef.current) searchRef.current.focus(); } },
     { key: "?", fn: () => setShowHints(v => !v) },
     { key: "t", fn: () => handleTabSwitch("terminal") },
   ], [activeTab, cmdOpen]);

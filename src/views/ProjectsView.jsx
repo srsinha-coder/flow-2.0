@@ -1963,6 +1963,11 @@ export default function ProjectsView({
           if (createSuccessTimerRef.current) clearTimeout(createSuccessTimerRef.current);
           createSuccessTimerRef.current = setTimeout(() => { setCreateSuccess(null); createSuccessTimerRef.current = null; }, 4500);
           setSelectedProject(id);
+          // Set the header breadcrumb + back nav (same as openProject) so the
+          // detail page shows "Projects / X## / Name" after creation.
+          if (setDetailLabel) setDetailLabel(`${id} / ${name}`);
+          if (setGoBack) setGoBack(goBackToList);
+          if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "instant" });
         }}
       />}
 

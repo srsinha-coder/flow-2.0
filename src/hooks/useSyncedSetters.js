@@ -301,6 +301,11 @@ export function useSyncedSetters({
 
     setTimeout(async () => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Dev-seed mode: persist every people change (incl. isAdmin toggles,
+      // role/squad edits) to localStorage so they survive reloads.
+      if (isDevSeedMode()) {
+        devStore.persistPeople(next);
+      }
       if (next.length > prev.length) {
         const added = next.find(p => !prev.some(pp => pp.name === p.name));
         if (added) {

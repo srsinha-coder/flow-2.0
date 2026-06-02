@@ -1502,6 +1502,7 @@ import { migrateProjectToTracks, derivePrimaryPhase } from '../lib/tracks';
 // ── Persistence layer: localStorage + cross-tab sync ──────────────
 const STORAGE_KEY_STATE = "flow_devstore_state";
 const STORAGE_KEY_PROJECTS = "flow_devstore_projects";
+const STORAGE_KEY_PEOPLE = "flow_devstore_people";
 
 function _persistState() {
   try { localStorage.setItem(STORAGE_KEY_STATE, JSON.stringify(_state)); } catch { /* quota */ }
@@ -1509,6 +1510,23 @@ function _persistState() {
 function _persistProjects() {
   try { localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(seedProjects)); } catch { /* quota */ }
 }
+function _persistPeople() {
+  try { localStorage.setItem(STORAGE_KEY_PEOPLE, JSON.stringify(seedPeople)); } catch { /* quota */ }
+}
+
+// Hydrate seedPeople from localStorage so role/squad/admin edits survive reload
+(() => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_PEOPLE);
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr) && arr.length) {
+        seedPeople.length = 0;
+        arr.forEach(p => seedPeople.push(p));
+      }
+    }
+  } catch { /* ignore */ }
+})();
 
 // Hydrate _state from localStorage if available
 (() => {
@@ -1718,6 +1736,13 @@ export const devStore = {
     _persistProjects();
   },
 
+  // ── People persistence (role / squad / admin edits survive reload) ──
+  persistPeople(peopleArray) {
+    seedPeople.length = 0;
+    peopleArray.forEach(p => seedPeople.push(p));
+    _persistPeople();
+  },
+
   // ── Realtime-ish subscription ────────────────────────────────
   subscribe(fn) { _subs.add(fn); return () => _subs.delete(fn); },
 };
@@ -1726,6 +1751,7 @@ export const devStore = {
 if (typeof window !== "undefined" && isDevSeedMode()) {
   if (!localStorage.getItem(STORAGE_KEY_STATE)) _persistState();
   if (!localStorage.getItem(STORAGE_KEY_PROJECTS)) _persistProjects();
+  if (!localStorage.getItem(STORAGE_KEY_PEOPLE)) _persistPeople();
 }
 
 // Convenience: pre-populated project list with current lastActivityAt

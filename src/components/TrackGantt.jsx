@@ -54,16 +54,25 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
     const shipDate = proj.shippedAt || proj.gaEnteredAt;
     const shipP = (proj.status === "shipped" && shipDate) ? ((toDay(shipDate.slice(0, 10)) - earliest) / range) * 100 : null;
 
-    // Vertical status lines: red Blocked, orange Deprioritized, grey Resumed
+    // Vertical status lines + translucent bands for blocked/deprioritized periods
     const lines = [];
+    const bands = [];
+    let latestResume = null;
     for (const h of (proj.statusHistory || [])) {
       const fromPos = ((toDay(h.from) - earliest) / range) * 100;
       if (fromPos > 0 && fromPos < 100) {
-        lines.push({ pos: fromPos, color: h.type === "blocked" ? c.red : c.amber, label: h.type === "blocked" ? "Blocked" : "Deprioritized", dashed: false });
+        lines.push({ pos: fromPos, color: h.type === "blocked" ? c.red : c.textDim, label: h.type === "blocked" ? "Blocked" : "Deprioritized", dashed: false });
+      }
+      const endMs = h.to ? toDay(h.to) : now;
+      const toPosClamped = Math.min(100, ((endMs - earliest) / range) * 100);
+      const fromPosClamped = Math.max(0, fromPos);
+      if (toPosClamped > fromPosClamped) {
+        bands.push({ left: fromPosClamped, width: toPosClamped - fromPosClamped, color: h.type === "blocked" ? c.red : c.textDim });
       }
       if (h.to) {
         const toPos = ((toDay(h.to) - earliest) / range) * 100;
-        if (toPos > 0 && toPos < 100) lines.push({ pos: toPos, color: c.textDim, label: "Resumed", dashed: true });
+        if (toPos > 0 && toPos < 100) lines.push({ pos: toPos, color: c.green, label: "Resumed", dashed: true });
+        if (!latestResume || toDay(h.to) > toDay(latestResume)) latestResume = h.to;
       }
     }
 
@@ -73,6 +82,8 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
       endDatePos: proj.endDate ? ((toDay(proj.endDate) - earliest) / range) * 100 : null,
       shippedPos: shipP,
       statusLines: lines,
+      statusBands: bands,
+      resumeDate: latestResume,
     };
   }, [proj]);
 
@@ -291,6 +302,13 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
             {/* Timeline — synced scroll (hidden scrollbar, driven by header) */}
             <div ref={addScrollRef} onScroll={handleScroll} className="flow-gantt-no-scroll" style={scrollStyleHidden}>
               <div style={{ width: innerW, position: "relative", height: ROW_H }}>
+                {/* Blocked / Deprioritized bands (translucent fill) */}
+                {statusBands.map((b, i) => (
+                  <div key={`band-${i}`} style={{
+                    position: "absolute", left: `${b.left}%`, width: `${b.width}%`,
+                    top: 0, bottom: 0, background: `${b.color}14`, zIndex: 0,
+                  }} />
+                ))}
                 {/* Today line */}
                 {todayPos > 0 && todayPos < 100 && (
                   <div style={{
@@ -323,12 +341,15 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                 {trackData?.periods?.map((period, pi) => {
                   const pos = barStyle(period.started_at, period.completed_at);
                   const isDone = !!period.completed_at;
+                  // Periods started at/after the latest resume render green
+                  const isResumed = resumeDate && toDay(period.started_at) >= toDay(resumeDate);
+                  const barColor = isResumed ? c.green : color;
                   return (
                     <div key={pi} style={{
                       position: "absolute", top: 8, height: ROW_H - 16,
                       ...pos,
-                      background: isDone ? `${color}50` : color,
-                      borderRadius: 4, minWidth: 4,
+                      background: isDone ? `${barColor}50` : barColor,
+                      borderRadius: 4, minWidth: 4, zIndex: 1,
                     }} />
                   );
                 })}
