@@ -473,30 +473,56 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
       })()}
 
       {/* ═══ Block / Deprioritize history messages ═══ */}
-      {(proj.statusHistory || []).filter(h => h.to).length > 0 && (
-        <div style={{
-          marginTop: space[3], paddingTop: space[3],
-          borderTop: `1px solid ${c.border}`,
-          display: "flex", flexDirection: "column", gap: space[1],
-        }}>
-          {(proj.statusHistory || []).filter(h => h.to).map((h, i) => (
-            <div key={`hist-${i}`} style={{
-              display: "flex", alignItems: "center", gap: 6,
-              paddingLeft: space[3],
-              fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid,
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
-                marginRight: 2,
-                background: h.type === "blocked" ? c.red : c.textDim,
-              }} />
-              This project was {h.type === "blocked" ? "blocked" : "deprioritized"} from{" "}
-              <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.from)}</strong> to{" "}
-              <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.to)}</strong>.
-            </div>
-          ))}
-        </div>
-      )}
+      {(() => {
+        const history = proj.statusHistory || [];
+        // Only show once a project has been resumed at least once (otherwise the
+        // current pause is already shown in the banner above the hero).
+        const types = ["blocked", "deprioritized"].filter(t =>
+          history.some(h => h.type === t && h.to)
+        );
+        if (types.length === 0) return null;
+        return (
+          <div style={{
+            marginTop: space[3], paddingTop: space[3], paddingBottom: space[4],
+            borderTop: `1px solid ${c.border}`,
+            display: "flex", flexDirection: "column", gap: space[2],
+          }}>
+            {types.map(type => {
+              const periods = history
+                .filter(h => h.type === type)
+                .sort((a, b) => toDay(a.from) - toDay(b.from));
+              return (
+                <div key={type} style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  paddingLeft: space[3],
+                  fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid,
+                }}>
+                  <span style={{
+                    width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                    marginRight: 2,
+                    background: type === "blocked" ? c.red : c.textDim,
+                  }} />
+                  This project was {type === "blocked" ? "blocked" : "deprioritized"} from{" "}
+                  {periods.map((h, i) => (
+                    <React.Fragment key={i}>
+                      {i > 0 && " and "}
+                      {h.to ? (
+                        <>
+                          <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.from)}</strong>{" to "}
+                          <strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.to)}</strong>
+                        </>
+                      ) : (
+                        <><strong style={{ color: c.text, fontWeight: 600 }}>{fmtShort(h.from)}</strong>{" till date"}</>
+                      )}
+                    </React.Fragment>
+                  ))}
+                  .
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
