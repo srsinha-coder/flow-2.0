@@ -362,7 +362,7 @@ function WelcomeScreen({ onStart, onSkip }) {
           display: "flex", flexWrap: "wrap", gap: space[2],
           justifyContent: "center", marginBottom: space[7],
         }}>
-          {["Track Projects", "Manage Tracks", "Project Updates", "My Lens", "Ship Announcements"].map(f => (
+          {["Track Projects", "Manage Tracks", "Add Resources", "Post Updates", "Announce Releases"].map(f => (
             <span key={f} style={{
               padding: `${space[1] + 1}px ${space[3]}px`,
               borderRadius: 999,
