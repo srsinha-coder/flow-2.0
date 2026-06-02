@@ -17,6 +17,24 @@ const firstGlyph = (name) => {
   return arr.length ? arr[0].toUpperCase() : "?";
 };
 
+// ── Capacity model for member workload (active = in_flight + blocked) ──
+//   1–2 healthy (green) · 3 watch (amber) · 4+ overloaded (red) · 0 unassigned.
+const CAPACITY_FULL = 4;        // 4+ active projects fills the bar / flags overload
+const OVERLOAD_AT = 4;          // threshold for the "overloaded" alert (more than 3)
+function capacityOf(count) {
+  if (count >= OVERLOAD_AT) return { zone: "overloaded", color: c.red, label: "Overloaded" };
+  if (count === 3) return { zone: "watch", color: c.amber, label: "At capacity" };
+  if (count >= 1) return { zone: "healthy", color: c.green, label: "Healthy" };
+  return { zone: "idle", color: c.textDim, label: "Unassigned" };
+}
+
+// Key squad roles we proactively check coverage for.
+const KEY_ROLES = [
+  { label: "PM", test: r => /product manager|^pm$/i.test(r) },
+  { label: "Engineer", test: r => /engineer|developer|^swe$/i.test(r) },
+  { label: "Designer", test: r => /design/i.test(r) },
+];
+
 /* ═══════════════════════════════════════════════════════════ */
 /*  PEOPLE DEEP DIVE                                         */
 /* ═══════════════════════════════════════════════════════════ */
@@ -76,7 +94,6 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
   Object.values(squadsWithPeople).forEach(members => flatFiltered.push(...members));
 
   // Compute per-person active project counts (in_flight + blocked only)
-  const OVERLOAD_THRESHOLD = 5;
   const personProjectCounts = useMemo(() => {
     const map = {};
     const activeProjs = (projects || []).filter(p => p.status === "in_flight" || p.status === "blocked");
@@ -234,86 +251,109 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
           />
         </KpiGrid>
 
-        {/* ═══ TEAM ALLOCATION INSIGHTS ═══ */}
+        {/* ═══ TEAM HEALTH — proactive capacity & coverage alerts ═══ */}
         {(() => {
-          const insights = [];
+          const flags = [];
 
-          // 1. Overloaded people (≥ OVERLOAD_THRESHOLD active projects)
-          const overloaded = people.filter(p => (personProjectCounts[p.id] || 0) >= OVERLOAD_THRESHOLD);
-          if (overloaded.length > 0) {
-            insights.push({
-              severity: "critical",
-              icon: (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.red} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
-              ),
-              text: `${overloaded.length} ${overloaded.length === 1 ? "person is" : "persons are"} overloaded with multiple active projects: ${overloaded.map(p => p.name.split(" ")[0]).join(", ")}`,
-              action: overloaded.length === 1 ? () => openPerson(overloaded[0].name) : null,
+          // 1. Overloaded members (4+ active projects → red)
+          people
+            .filter(p => (personProjectCounts[p.id] || 0) >= OVERLOAD_AT)
+            .sort((a, b) => (personProjectCounts[b.id] || 0) - (personProjectCounts[a.id] || 0))
+            .forEach(p => {
+              const n = personProjectCounts[p.id] || 0;
+              flags.push({ sev: "critical", text: `${p.name.split(" ")[0]} is overloaded — ${n} active projects`, action: () => openPerson(p.name) });
             });
-          }
 
-          // 2. Idle people (0 active projects)
+          // Group ALL people by squad (not the filtered view) for structural checks.
+          const squadMembers = {};
+          people.forEach(p => { const s = (p.squad || "").trim() || "Unassigned"; (squadMembers[s] = squadMembers[s] || []).push(p); });
+
+          // 2. Single-member squads (bus-factor risk → amber)
+          Object.entries(squadMembers)
+            .filter(([sq, m]) => sq !== "Unassigned" && m.length === 1)
+            .forEach(([sq]) => flags.push({ sev: "warning", text: `${sq} squad has only 1 member` }));
+
+          // 3. Squads missing a key role (PM / Engineer / Designer → amber).
+          // Skip single-member squads — they obviously lack roles (already flagged).
+          Object.entries(squadMembers)
+            .filter(([sq, m]) => sq !== "Unassigned" && m.length >= 2)
+            .forEach(([sq, m]) => {
+              const missing = KEY_ROLES.filter(role => !m.some(p => role.test(p.role || "")));
+              if (missing.length > 0) {
+                flags.push({ sev: "warning", text: `${sq} squad has no ${missing.map(r => r.label).join(", ")} assigned` });
+              }
+            });
+
+          // 4. Untagged resources — members on no active project (→ neutral)
           const idle = people.filter(p => (personProjectCounts[p.id] || 0) === 0);
           if (idle.length > 0) {
-            insights.push({
-              severity: "info",
-              icon: (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.blue || c.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-                </svg>
-              ),
-              text: `${idle.length} ${idle.length === 1 ? "person has" : "persons have"} no active projects: ${idle.slice(0, 4).map(p => p.name.split(" ")[0]).join(", ")}${idle.length > 4 ? ` +${idle.length - 4} more` : ""}`,
-            });
+            const names = idle.slice(0, 4).map(p => p.name.split(" ")[0]).join(", ");
+            flags.push({ sev: "info", text: `${idle.length} member${idle.length === 1 ? "" : "s"} unassigned to any active project — ${names}${idle.length > 4 ? ` +${idle.length - 4} more` : ""}` });
           }
 
-          if (insights.length === 0) return null;
-
-          const severityColor = { critical: c.red, info: c.blue || c.accent };
-          const severityBg = { critical: c.red + "0A", info: (c.blue || c.accent) + "08" };
-          const severityBorder = { critical: c.red + "20", info: (c.blue || c.accent) + "15" };
+          const counts = {
+            critical: flags.filter(f => f.sev === "critical").length,
+            warning: flags.filter(f => f.sev === "warning").length,
+            info: flags.filter(f => f.sev === "info").length,
+          };
+          const dotColor = { critical: c.red, warning: c.amber, info: c.textDim, ok: c.green };
+          const rowBg = { critical: c.red + "0A", warning: c.amber + "0C", info: c.textDim + "0A", ok: c.green + "0A" };
+          const rowBorder = { critical: c.red + "20", warning: c.amber + "22", info: c.border, ok: c.green + "20" };
 
           return (
             <div style={{
               background: c.surfaceSolid,
               borderRadius: layout.radiusLg,
               border: `1px solid ${c.border}`,
+              boxShadow: c.shadowCard,
               padding: `${space[4]}px`,
               display: "flex", flexDirection: "column", gap: space[2],
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: space[2], marginBottom: space[1] }}>
                 <span style={{
                   fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700,
-                  letterSpacing: "0.08em", color: c.textMid, textTransform: "uppercase",
-                }}>Team Allocation Insights</span>
-                <span style={{
-                  fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
-                  color: c.surfaceSolid, background: c.textDim,
-                  padding: "2px 6px", borderRadius: 99, lineHeight: 1.3, minWidth: 16,
-                  textAlign: "center",
-                }}>{insights.length}</span>
+                  letterSpacing: "0.08em", color: c.text, textTransform: "uppercase",
+                }}>Team Health</span>
+                {/* Severity tally chips */}
+                {flags.length === 0 ? (
+                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.green }}>● All clear</span>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+                    {counts.critical > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.red }}>● {counts.critical}</span>}
+                    {counts.warning > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.amber }}>● {counts.warning}</span>}
+                    {counts.info > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.textDim }}>● {counts.info}</span>}
+                  </div>
+                )}
               </div>
-              {insights.map((ins, i) => (
+
+              {flags.length === 0 ? (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: space[2],
+                  padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
+                  background: rowBg.ok, border: `1px solid ${rowBorder.ok}`,
+                }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor.ok, flexShrink: 0 }} />
+                  <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.text, lineHeight: 1.5 }}>
+                    No capacity or coverage risks detected — team looks healthy.
+                  </span>
+                </div>
+              ) : flags.map((f, i) => (
                 <div key={i}
-                  onClick={ins.action || undefined}
+                  onClick={f.action || undefined}
                   style={{
-                    display: "flex", alignItems: "flex-start", gap: space[2],
+                    display: "flex", alignItems: "center", gap: space[2],
                     padding: `${space[2]}px ${space[3]}px`,
                     borderRadius: layout.radiusSm,
-                    background: severityBg[ins.severity],
-                    border: `1px solid ${severityBorder[ins.severity]}`,
-                    cursor: ins.action ? "pointer" : "default",
+                    background: rowBg[f.sev],
+                    border: `1px solid ${rowBorder[f.sev]}`,
+                    cursor: f.action ? "pointer" : "default",
                     transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
                   }}
-                  onMouseEnter={ins.action ? e => { e.currentTarget.style.background = severityColor[ins.severity] + "14"; } : undefined}
-                  onMouseLeave={ins.action ? e => { e.currentTarget.style.background = severityBg[ins.severity]; } : undefined}
+                  onMouseEnter={f.action ? e => { e.currentTarget.style.background = dotColor[f.sev] + "16"; } : undefined}
+                  onMouseLeave={f.action ? e => { e.currentTarget.style.background = rowBg[f.sev]; } : undefined}
                 >
-                  <span style={{ flexShrink: 0, marginTop: 1 }}>{ins.icon}</span>
-                  <span style={{
-                    fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size,
-                    color: c.text, lineHeight: 1.5,
-                  }}>{ins.text}</span>
+                  <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor[f.sev], flexShrink: 0 }} />
+                  <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.text, lineHeight: 1.5 }}>{f.text}</span>
                 </div>
               ))}
             </div>
@@ -364,10 +404,12 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                 {members.map((p, gi) => {
                   const isFocused = kbActive && (startIdx + gi) === focusIdx;
                   const projCount = personProjectCounts[p.id] || 0;
+                  const cap = capacityOf(projCount);
+                  const fillPct = Math.min(projCount / CAPACITY_FULL, 1) * 100;
 
                   return (
-                    <div key={p.name} role="button" tabIndex={0} aria-label={`Open ${p.name}`} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPerson(p.name); } }} className={`flow-row${isFocused ? " flow-kb-focus" : ""}`} onClick={() => openPerson(p.name)} style={{
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                    <div key={p.name} role="button" tabIndex={0} aria-label={`Open ${p.name}, ${projCount} active projects, ${cap.label}`} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPerson(p.name); } }} className={`flow-row${isFocused ? " flow-kb-focus" : ""}`} onClick={() => openPerson(p.name)} style={{
+                      display: "flex", flexDirection: "column", gap: space[4],
                       padding: space[6], background: c.surface,
                       borderRadius: layout.radiusLg, cursor: "pointer",
                       border: `1px solid ${isFocused ? c.accent : c.border}`,
@@ -375,26 +417,42 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                       animation: `fadeIn ${motion.normal.duration} ${motion.normal.easing} both`,
                       animationDelay: `${Math.min(gi * 30, 400)}ms`,
                     }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: space[3], minWidth: 0, flex: 1 }}>
-                        <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: "50%", background: c.surfaceAlt, border: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: typo.monoMd.font, fontSize: typo.monoMd.size, fontWeight: typo.monoMd.weight, color: c.textMid, flexShrink: 0 }}>
-                          {firstGlyph(p.name)}
-                        </div>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                            <span title={p.name} style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, letterSpacing: typo.displaySm.tracking, color: c.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{p.name}</span>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3] }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: space[3], minWidth: 0, flex: 1 }}>
+                          <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: "50%", background: c.surfaceAlt, border: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: typo.monoMd.font, fontSize: typo.monoMd.size, fontWeight: typo.monoMd.weight, color: c.textMid, flexShrink: 0 }}>
+                            {firstGlyph(p.name)}
                           </div>
-                          <div title={p.role || ""} style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: typo.bodySm.weight, color: c.textMid, marginTop: space[1], lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {p.role || "—"}
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+                              <span title={p.name} style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, letterSpacing: typo.displaySm.tracking, color: c.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{p.name}</span>
+                            </div>
+                            <div title={p.role || ""} style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: typo.bodySm.weight, color: c.textMid, marginTop: space[1], lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {p.role || "—"}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Project count + capacity zone */}
+                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: space[3], display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                          <div style={{ fontFamily: typo.monoLg.font, fontSize: 22, fontWeight: 700, color: cap.color, lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
+                            {projCount}
+                          </div>
+                          <div style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: typo.monoSm.weight, letterSpacing: typo.monoSm.tracking, color: cap.color, marginTop: space[1], textTransform: "uppercase" }}>
+                            {cap.label}
                           </div>
                         </div>
                       </div>
-                      {/* Project count + overload */}
-                      <div style={{ textAlign: "right", flexShrink: 0, marginLeft: space[3], display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-                        <div style={{ fontFamily: typo.monoLg.font, fontSize: 22, fontWeight: 700, color: projCount > OVERLOAD_THRESHOLD ? c.red : c.text, lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
-                          {projCount}
+
+                      {/* ── Capacity bar ── */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: space[1] + 2 }}>
+                        <div aria-hidden="true" style={{ position: "relative", height: 4, borderRadius: 2, background: c.surfaceAlt, overflow: "hidden" }}>
+                          <div style={{
+                            position: "absolute", left: 0, top: 0, bottom: 0,
+                            width: `${fillPct}%`, background: cap.color, borderRadius: 2,
+                            transition: `width ${motion.normal.duration} ${motion.normal.easing}, background ${motion.fast.duration} ${motion.fast.easing}`,
+                          }} />
                         </div>
-                        <div style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: typo.monoSm.weight, letterSpacing: typo.monoSm.tracking, color: projCount > OVERLOAD_THRESHOLD ? c.red : c.textMid, marginTop: space[1], textTransform: "uppercase" }}>
-                          {projCount > OVERLOAD_THRESHOLD ? "Overloaded" : `Project${projCount !== 1 ? "s" : ""}`}
+                        <div style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: typo.monoSm.weight, color: c.textMid, letterSpacing: typo.monoSm.tracking, fontVariantNumeric: "tabular-nums" }}>
+                          {projCount} active project{projCount === 1 ? "" : "s"}
                         </div>
                       </div>
                     </div>
