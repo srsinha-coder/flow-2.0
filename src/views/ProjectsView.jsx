@@ -1847,7 +1847,7 @@ export default function ProjectsView({
                                 <div style={{ height: 3, borderRadius: 2, background: c.border, overflow: "hidden", width: "100%" }}>
                                   <div style={{
                                     height: "100%", borderRadius: 2, width: `${Math.min(pct, 100)}%`,
-                                    background: isShipped ? c.green : m.overdue ? c.red : "#EAB308",
+                                    background: isShipped ? c.green : m.overdue ? c.red : c.text,
                                     transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
                                   }} />
                                 </div>
