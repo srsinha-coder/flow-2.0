@@ -16,7 +16,7 @@ import {
   logProjectMemberRemoved,
 } from './activityLog';
 import { isDevSeedMode, devStore } from '../data/devSeed';
-import { startTrack as _startTrack, completeTrack as _completeTrack, reopenTrack as _reopenTrack, derivePrimaryPhase } from './tracks';
+import { startTrack as _startTrack, completeTrack as _completeTrack, reopenTrack as _reopenTrack, derivePrimaryPhase, applyBackdatedTransition } from './tracks';
 
 function logError(op, err) {
   console.error(`[Flow DB] ${op} failed:`, err.message || err);
@@ -312,6 +312,41 @@ export async function reopenTrackInDB(projectId, trackName, projectsRef, extraDe
   _reopenTrack(proj, trackName);
   const { error } = await supabase.from('projects').update({ tracks: proj.tracks, phase: proj.phase }).eq('id', projectId);
   if (error) { logError('reopenTrack', error); return { ok: false, error }; }
+  return { ok: true };
+}
+
+// Records a (usually backdated) phase transition or track start at an explicit
+// timestamp `at` (ISO string). Closes the `from` track and opens the `to` track
+// at `at`, and writes a phase/track event stamped with that same past date so it
+// lands in the timeline at the correct point. `from` may be null for a plain
+// "add track". `action` is "project_phase_changed" (default) or "track_started".
+export async function recordBackdatedTrackInDB(projectId, { from = null, to, at, reason = null, note = null, action = 'project_phase_changed' }, projectsRef) {
+  const details = action === 'track_started'
+    ? { track: to, backdated: true, note }
+    : { from, to, backdated: true, reason, note };
+
+  if (isDevSeedMode()) {
+    const proj = projectsRef?.find(p => p.id === projectId);
+    if (proj) {
+      proj.tracks = applyBackdatedTransition(proj.tracks || {}, from, to, at);
+      proj.phase = derivePrimaryPhase(proj);
+      if (proj.status === 'upcoming') proj.status = 'in_flight';
+      devStore.persistProjects(projectsRef);
+      devStore.logEvent({ projectId, action, details, createdAt: at });
+    }
+    return { ok: true };
+  }
+  const { data: cur } = await supabase.from('projects').select('tracks, status').eq('id', projectId).maybeSingle();
+  const tracks = applyBackdatedTransition(cur?.tracks || {}, from, to, at);
+  const phase = derivePrimaryPhase({ tracks });
+  const update = { tracks, phase };
+  if (cur?.status === 'upcoming') update.status = 'in_flight';
+  const { error } = await supabase.from('projects').update(update).eq('id', projectId);
+  if (error) { logError('recordBackdatedTrack', error); return { ok: false, error }; }
+  const { error: logErr } = await supabase.from('activity_log').insert({
+    entity_type: 'project', entity_id: projectId, action, details, created_at: at,
+  });
+  if (logErr) logError('recordBackdatedTrack:log', logErr);
   return { ok: true };
 }
 

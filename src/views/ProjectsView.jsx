@@ -16,8 +16,8 @@ import { isDevSeedMode, devStore } from "../data/devSeed";
 import { getProjectRole, can as defaultCan } from "../lib/permissions";
 import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
-import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB } from "../lib/mutations";
-import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase } from "../lib/tracks";
+import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB, recordBackdatedTrackInDB } from "../lib/mutations";
+import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition } from "../lib/tracks";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
@@ -2466,6 +2466,17 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   );
 }
 
+// Combine a date input (YYYY-MM-DD) and a time input (HH:MM) into an ISO
+// timestamp in the user's local timezone. Used by the backdating modals so a
+// missed transition lands at its true past moment.
+function backdatedISO(dateStr, timeStr) {
+  if (!dateStr) return new Date().toISOString();
+  const [h, mi] = (timeStr || "00:00").split(":").map(Number);
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setHours(Number.isFinite(h) ? h : 0, Number.isFinite(mi) ? mi : 0, 0, 0);
+  return d.toISOString();
+}
+
 /* ══════════════════════════════════════════════════════════════════
    PROJECT DEEP DIVE — PeopleDeepDive structural model
    De-cluttered: hero → history → ledger → supporting metadata
@@ -2542,6 +2553,64 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [depsError, setDepsError] = useState(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [phaseTransitions, setPhaseTransitions] = useState([]);
+
+  // ── Backdating: "Log missed transition" + "Add track" modals ──
+  const [missedModal, setMissedModal] = useState(false);
+  const [missedFrom, setMissedFrom] = useState("");
+  const [missedTo, setMissedTo] = useState("");
+  const [missedDate, setMissedDate] = useState(today);
+  const [missedTime, setMissedTime] = useState("12:00");
+  const [missedReason, setMissedReason] = useState("");
+
+  const [addTrackModal, setAddTrackModal] = useState(false);
+  const [addTrackPhase, setAddTrackPhase] = useState("");
+  const [addTrackDate, setAddTrackDate] = useState(today);
+  const [addTrackTime, setAddTrackTime] = useState("12:00");
+  const [addTrackNote, setAddTrackNote] = useState("");
+
+  const openMissedModal = useCallback(() => {
+    setMissedFrom(""); setMissedTo(""); setMissedDate(today); setMissedTime("12:00"); setMissedReason("");
+    setMissedModal(true);
+  }, [today]);
+  const openAddTrackModal = useCallback(() => {
+    setAddTrackPhase(""); setAddTrackDate(today); setAddTrackTime("12:00"); setAddTrackNote("");
+    setAddTrackModal(true);
+  }, [today]);
+
+  // Shared writer for both backdating modals: optimistic React update + persist
+  // via the mutations layer (dev seed or Supabase) + immediate timeline refresh.
+  const applyBackdated = useCallback(({ from = null, to, at, reason = null, note = null, action }) => {
+    setProjects(prev => prev.map(p => {
+      if (p.id !== proj.id) return p;
+      const tracks = applyBackdatedTransition(p.tracks, from, to, at);
+      const updated = { ...p, tracks, lastActivityAt: new Date().toISOString() };
+      updated.phase = derivePrimaryPhase(updated);
+      if (updated.status === "upcoming") updated.status = "in_flight";
+      return updated;
+    }));
+    recordBackdatedTrackInDB(proj.id, { from, to, at, reason, note, action }, projects);
+    setPhaseTransitions(prev =>
+      [...prev, { at, phase: to, by: personProfile?.name || "You", backdated: true }]
+        .sort((a, b) => new Date(a.at) - new Date(b.at))
+    );
+  }, [proj.id, projects, setProjects, personProfile]);
+
+  const saveMissedTransition = useCallback(() => {
+    if (!missedTo) return;
+    const at = backdatedISO(missedDate, missedTime);
+    applyBackdated({ from: missedFrom || null, to: missedTo, at, reason: missedReason.trim() || null, action: "project_phase_changed" });
+    setMissedModal(false);
+    window.__flowToast?.(`Logged ${missedFrom ? missedFrom + " → " : ""}${missedTo} (backdated)`);
+  }, [missedTo, missedFrom, missedDate, missedTime, missedReason, applyBackdated]);
+
+  const saveAddTrack = useCallback(() => {
+    if (!addTrackPhase) return;
+    const at = backdatedISO(addTrackDate, addTrackTime);
+    applyBackdated({ from: null, to: addTrackPhase, at, note: addTrackNote.trim() || null, action: "track_started" });
+    setAddTrackModal(false);
+    window.__flowToast?.(`${addTrackPhase} track logged`);
+  }, [addTrackPhase, addTrackDate, addTrackTime, addTrackNote, applyBackdated]);
+
   // Resources IIFE states — hoisted to component level to avoid conditional hook ordering
   const [resAdding, setResAdding] = useState(false);
   const [resNewType, setResNewType] = useState("prd");
@@ -3908,7 +3977,24 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
       {/* ═══ TIMELINE — TrackGantt then alerts below ═══ */}
       {proj.status !== "upcoming" && <div data-tour="track-gantt">
-        <SectionHead title="Timeline" />
+        <SectionHead title="Timeline" right={can.manageTracks(projRole) ? (
+          <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+            <button type="button" onClick={openMissedModal} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
+              border: `1px solid ${c.border}`, background: c.surfaceAlt,
+              color: c.textMid, cursor: "pointer",
+              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+            }}>⤺ Log missed transition</button>
+            <button type="button" onClick={openAddTrackModal} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
+              border: `1px solid ${c.accent}40`, background: c.accentDim,
+              color: c.accent, cursor: "pointer",
+              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+            }}>+ Add track</button>
+          </div>
+        ) : null} />
 
         {/* ── Track Gantt (parallel tracks) ── */}
         <TrackGantt
@@ -4070,6 +4156,107 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
 
       {/* FAB removed — edit is now the pencil icon in the header; delete lives in the edit panel. */}
+
+      {/* ═══ LOG MISSED TRANSITION — backdated PRD → Dev style entry ═══ */}
+      <Modal open={missedModal} onClose={() => setMissedModal(false)} title="Log missed transition" accent={c.amber}>
+        <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodySm.size, color: c.textMid, lineHeight: 1.5, marginBottom: space[4] }}>
+          Record a phase transition that wasn't logged on time. It'll appear in the timeline at the date you choose, marked <strong style={{ color: c.amber }}>backdated</strong>.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Phase from <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+              <Sel value={missedFrom} onChange={e => setMissedFrom(e.target.value)} style={{ width: "100%" }}>
+                <option value="">— none —</option>
+                {trackNames.map(t => <option key={t} value={t}>{t}</option>)}
+              </Sel>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Phase to</Label>
+              <Sel value={missedTo} onChange={e => setMissedTo(e.target.value)} style={{ width: "100%" }}>
+                <option value="">— select —</option>
+                {trackNames.filter(t => t !== missedFrom).map(t => <option key={t} value={t}>{t}</option>)}
+              </Sel>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Date</Label>
+              <Inp type="date" value={missedDate} max={today} onChange={e => setMissedDate(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Time</Label>
+              <Inp type="time" value={missedTime} onChange={e => setMissedTime(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+          </div>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Reason for backdating <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+            <textarea
+              value={missedReason}
+              onChange={e => setMissedReason(e.target.value)}
+              placeholder="e.g. Forgot to log when Dev actually started"
+              rows={2}
+              style={{
+                width: "100%", padding: `${space[2]}px ${space[3]}px`,
+                borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                background: c.surfaceAlt, color: c.text, resize: "vertical",
+                fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
+                outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: space[2], justifyContent: "flex-end", marginTop: space[1] }}>
+            <Btn variant="ghost" size="sm" onClick={() => setMissedModal(false)}>Cancel</Btn>
+            <Btn variant="command" size="sm" disabled={!missedTo} style={{ borderColor: c.amberBorder, color: c.amber }} onClick={saveMissedTransition}>Save transition</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ═══ ADD TRACK — start a phase, with backdating support ═══ */}
+      <Modal open={addTrackModal} onClose={() => setAddTrackModal(false)} title="Add track" accent={c.accent}>
+        <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodySm.size, color: c.textMid, lineHeight: 1.5, marginBottom: space[4] }}>
+          Start a track now, or backdate it to when work actually began.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Phase</Label>
+            <Sel value={addTrackPhase} onChange={e => setAddTrackPhase(e.target.value)} style={{ width: "100%" }}>
+              <option value="">— select —</option>
+              {trackNames.map(t => <option key={t} value={t}>{t}</option>)}
+            </Sel>
+          </div>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Date</Label>
+              <Inp type="date" value={addTrackDate} max={today} onChange={e => setAddTrackDate(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Time</Label>
+              <Inp type="time" value={addTrackTime} onChange={e => setAddTrackTime(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+          </div>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Notes <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+            <textarea
+              value={addTrackNote}
+              onChange={e => setAddTrackNote(e.target.value)}
+              placeholder={`What's going into ${addTrackPhase || "this track"}?`}
+              rows={2}
+              style={{
+                width: "100%", padding: `${space[2]}px ${space[3]}px`,
+                borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                background: c.surfaceAlt, color: c.text, resize: "vertical",
+                fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
+                outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: space[2], justifyContent: "flex-end", marginTop: space[1] }}>
+            <Btn variant="ghost" size="sm" onClick={() => setAddTrackModal(false)}>Cancel</Btn>
+            <Btn variant="command" size="sm" disabled={!addTrackPhase} onClick={saveAddTrack}>Add track</Btn>
+          </div>
+        </div>
+      </Modal>
 
       {/* ═══ START NOW MODAL — pick tracks to begin ═══ */}
       <Modal open={startNowModal} onClose={() => { setStartNowModal(false); setStartNowEndDate(""); }} title="Start this project" accent={c.accent}>

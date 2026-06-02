@@ -287,12 +287,18 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                   const pos = barStyle(period.started_at, period.completed_at);
                   const isDone = !!period.completed_at;
                   return (
-                    <div key={pi} style={{
-                      position: "absolute", top: 8, height: ROW_H - 16,
-                      ...pos,
-                      background: isDone ? `${color}50` : color,
-                      borderRadius: 4, minWidth: 4,
-                    }} />
+                    <div key={pi}
+                      title={period.backdated ? "Backdated entry — logged after the fact" : undefined}
+                      style={{
+                        position: "absolute", top: 8, height: ROW_H - 16,
+                        ...pos,
+                        background: isDone ? `${color}50` : color,
+                        borderRadius: 4, minWidth: 4,
+                        // Backdated periods get a dashed outline so they read as
+                        // retroactively logged rather than tracked in real time.
+                        border: period.backdated ? `1.5px dashed ${c.amber}` : undefined,
+                        boxSizing: "border-box",
+                      }} />
                   );
                 })}
               </div>

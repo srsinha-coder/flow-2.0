@@ -91,6 +91,27 @@ export function startTrack(proj, trackName) {
   return proj;
 }
 
+// Immutably apply a (possibly backdated) phase transition to a tracks object:
+// closes the `from` track's open period at `at`, and opens a `to` period at `at`.
+// `from` may be null (pure "start a track"). Periods opened this way are tagged
+// `backdated:true` so the UI can distinguish them from real-time updates.
+export function applyBackdatedTransition(tracks, from, to, at) {
+  const next = { ...(tracks || {}) };
+  if (from && next[from]?.periods?.length) {
+    const periods = [...next[from].periods];
+    const last = periods[periods.length - 1];
+    if (last && last.completed_at === null) {
+      periods[periods.length - 1] = { ...last, completed_at: at };
+    }
+    next[from] = { ...next[from], periods };
+  }
+  if (to) {
+    const existing = next[to] || { periods: [], owner: null };
+    next[to] = { ...existing, periods: [...existing.periods, { started_at: at, completed_at: null, backdated: true }] };
+  }
+  return next;
+}
+
 export function completeTrack(proj, trackName) {
   if (!proj.tracks || !proj.tracks[trackName]) return proj;
   const periods = proj.tracks[trackName].periods;
