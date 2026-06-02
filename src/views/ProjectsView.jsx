@@ -3032,28 +3032,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
         </div>
       )}
 
-      {/* ═══ ALPHA / BETA RELEASE BANNER — above hero card ═══ */}
-      {proj.status !== "shipped" && !proj.isBlocked && (() => {
-        const milestone = getReleaseMilestone(proj);
-        if (!milestone || milestone.stage === "Shipped" || !milestone.date) return null;
-        const accent = c.cyan;
-        return (
-          <div style={{
-            padding: `${space[3]}px ${space[4]}px`, borderRadius: layout.radiusSm,
-            background: `${accent}10`, border: `1px solid ${accent}25`,
-            display: "flex", alignItems: "center", gap: space[3],
-          }}>
-            <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>🚀</span>
-            <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
-              {milestone.stage} Release
-            </span>
-            <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid }}>
-              Opened {fmtDate(milestone.date.slice(0, 10))}
-            </span>
-          </div>
-        );
-      })()}
-
       {/* ═══ SHIPPED BANNER — above hero card ═══ */}
       {proj.status === "shipped" && (
         <div style={{
@@ -3139,6 +3117,14 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
               </svg>
               <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: c.green, letterSpacing: "0.08em", textTransform: "uppercase" }}>{releasePhase} Release</span>
+              {(() => {
+                const milestone = getReleaseMilestone(proj);
+                return milestone?.date ? (
+                  <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid }}>
+                    Opened {fmtDate(milestone.date.slice(0, 10))}
+                  </span>
+                ) : null;
+              })()}
               {proj.shipPct != null && (
                 <span style={{
                   fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
