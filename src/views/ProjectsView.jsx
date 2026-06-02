@@ -531,10 +531,12 @@ export default function ProjectsView({
     if (search.trim()) {
       list = filtered;
     } else {
+      // Alpha/Beta-active projects count as released (shown with shipped, not in-flight).
+      const hasReleased = (p) => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
       switch (activeTab) {
-        case "active": list = filtered.filter(p => p.status === "in_flight"); break;
+        case "active": list = filtered.filter(p => p.status === "in_flight" && !hasReleased(p)); break;
         case "at_risk": list = filtered.filter(p => metrics[p.id]?.atRisk); break;
-        case "shipped": list = filtered.filter(p => p.status === "shipped"); break;
+        case "shipped": list = filtered.filter(p => p.status === "shipped" || (p.status === "in_flight" && hasReleased(p))); break;
         case "blocked": list = filtered.filter(p => p.status === "blocked" || metrics[p.id]?.isBlocked); break;
         case "deprioritized": list = filtered.filter(p => p.status === "deprioritized"); break;
         case "upcoming": list = filtered.filter(p => p.status === "upcoming").sort((a, b) =>
@@ -576,8 +578,11 @@ export default function ProjectsView({
     // Projects with Alpha or Beta tracks active count toward "shipping" bucket
     const alphaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Alpha")).length;
     const betaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Beta")).length;
-    const shippedTotal = shipped.length + alphaActive + betaActive;
-    return { active: active.length, shipped: shipped.length, shippedTotal, alphaActive, betaActive, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
+    // Distinct released-in-flight (alpha OR beta active) — excluded from In Flight
+    const releasedActive = active.filter(p => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta")).length;
+    const inFlightCount = active.length - releasedActive;
+    const shippedTotal = shipped.length + releasedActive;
+    return { active: active.length, inFlightCount, shipped: shipped.length, shippedTotal, alphaActive, betaActive, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
   }, [filtered, metrics, today]);
 
   // ── Gantt-specific filter (separate from registry filters) ──
@@ -734,8 +739,8 @@ export default function ProjectsView({
 
   const TABS = [
     { key: "all", label: "All", count: summary.all },
-    { key: "active", label: "In Flight", count: summary.active },
-    { key: "shipped", label: "Shipped", count: summary.shipped },
+    { key: "active", label: "In Flight", count: summary.inFlightCount },
+    { key: "shipped", label: "Shipped", count: summary.shippedTotal },
     { key: "blocked", label: "Blocked", count: summary.blocked },
     { key: "deprioritized", label: "Deprioritized", count: summary.depri },
     { key: "upcoming", label: "Upcoming", count: summary.upcoming },
@@ -855,7 +860,7 @@ export default function ProjectsView({
           <KpiCard
             index={0}
             label="In Flight"
-            value={summary.active}
+            value={summary.inFlightCount}
             onClick={() => setActiveTab("active")}
             active={activeTab === "active"}
           >
