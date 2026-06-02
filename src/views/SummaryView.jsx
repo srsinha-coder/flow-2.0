@@ -93,7 +93,12 @@ function generateWeeklyDigest(projects, allEvents) {
   const now = Date.now();
   const weekAgo = now - 7 * 86_400_000;
   const twoWeeksAgo = now - 14 * 86_400_000;
-  const recentEvents = allEvents.filter(e => new Date(e.created_at).getTime() >= weekAgo);
+  // Scope the activity log to the (already filtered) project set so event-driven
+  // lines — Shipping, New — stay consistent with the KPI cards when a global
+  // filter (squad / owner / people) is active.
+  const projIds = new Set(projects.map(p => p.id));
+  const scopedEvents = allEvents.filter(e => projIds.has(e.entity_id));
+  const recentEvents = scopedEvents.filter(e => new Date(e.created_at).getTime() >= weekAgo);
 
   const phaseChanges = recentEvents.filter(e => e.action === "project_phase_changed");
   const shipEvents = phaseChanges.filter(e => ["Alpha", "Beta", "GA"].includes(e.details?.to));
@@ -114,7 +119,7 @@ function generateWeeklyDigest(projects, allEvents) {
   }
 
   // ── (4) WoW deltas, sourced from project_created activity log ──
-  const createdEvents = allEvents.filter(e => e.action === "project_created");
+  const createdEvents = scopedEvents.filter(e => e.action === "project_created");
   const createdBetween = (start, end) => createdEvents.filter(e => {
     const t = new Date(e.created_at).getTime();
     return t >= start && t < end;
@@ -350,6 +355,29 @@ const SummaryView = ({
     let p = projects;
     if (gf.squad?.length) p = p.filter(x => gf.squad.includes(x.squad));
     if (gf.owner?.length) p = p.filter(x => gf.owner.includes(x.owner));
+    // People filter: keep projects where any selected person is the owner/DRI OR
+    // a team member. Person values are names; owner/members may be stored by name
+    // or id, so we match against both (mirrors ProjectsView's projectPeople).
+    if (gf.person?.length) {
+      const idToName = new Map((people || []).map(pp => [pp.id, pp.name]));
+      p = p.filter(proj => {
+        const assoc = new Set();
+        if (proj.owner) assoc.add(proj.owner);
+        if (proj.owner_id != null) {
+          assoc.add(proj.owner_id);
+          const on = idToName.get(proj.owner_id);
+          if (on) assoc.add(on);
+        }
+        if (isDevSeedMode()) {
+          (devStore.listMembers(proj.id) || []).forEach(m => {
+            assoc.add(m.person_id);
+            const nm = idToName.get(m.person_id);
+            if (nm) assoc.add(nm);
+          });
+        }
+        return gf.person.some(fp => assoc.has(fp));
+      });
+    }
     if (myLens) p = p.filter(x => followedProjects.includes(x.id));
     if (timeframe?.start && timeframe?.end) {
       p = p.filter(proj => {
@@ -360,7 +388,7 @@ const SummaryView = ({
       });
     }
     return p;
-  }, [projects, gf.squad, gf.owner, myLens, viewerSquad, followedProjects, timeframe]);
+  }, [projects, people, gf.squad, gf.owner, gf.person, myLens, viewerSquad, followedProjects, timeframe]);
 
   const metrics = useMemo(
     () => computeProjectMetrics(filteredProjects, phaseDurationDefaults),
@@ -436,7 +464,7 @@ const SummaryView = ({
   }
 
   if (filteredProjects.length === 0) {
-    const hasFilter = gf.squad?.length || gf.owner?.length;
+    const hasFilter = gf.squad?.length || gf.owner?.length || gf.person?.length;
     return (
       <div ref={devRef} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "calc(100vh - 240px)" }}>
         <EmptyState

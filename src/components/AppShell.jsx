@@ -388,7 +388,7 @@ export function Header({
   const floatingLabel = detailLabel || currentNav?.label || "";
 
   // Local draft state for the drawer — syncs from pendingFilters when opening
-  const [draft, setDraft] = React.useState({ owner: [], squad: [], person: [] });
+  const [draft, setDraft] = React.useState({ owner: [], squad: [], person: [], track: [] });
 
   // Pending-apply flag: when set, triggers applyFilters on next render after setPendingFilters
   const applyNextRef = React.useRef(false);
@@ -413,7 +413,7 @@ export function Header({
   };
 
   const handleClearAll = () => {
-    setDraft({ owner: [], squad: [], person: [] });
+    setDraft({ owner: [], squad: [], person: [], track: [] });
     clearGlobalFilters();
     setDrawerOpen(false);
   };
@@ -713,6 +713,9 @@ export function Header({
             {globalFilters.squad.length > 0 && (
               <FilterChip label={`Squad: ${globalFilters.squad.join(", ")}`} onClick={() => removeAppliedFilter("squad")} />
             )}
+            {globalFilters.person?.length > 0 && (
+              <FilterChip label={`People: ${globalFilters.person.join(", ")}`} onClick={() => removeAppliedFilter("person")} />
+            )}
             {globalFilters.track?.length > 0 && (
               <FilterChip label={`Track: ${globalFilters.track.join(", ")}`} onClick={() => removeAppliedFilter("track")} />
             )}
@@ -986,10 +989,11 @@ function FilterDrawer({
   const filterGroups = [
     { key: "squad",  label: "Squad",  options: allSquads },
     { key: "owner",  label: "Owner",  options: allOwners },
+    { key: "person", label: "People", options: allPeople },
     { key: "track",  label: "Track",  options: allTracks },
   ];
 
-  const activeCount = [draft.squad, draft.owner, draft.track].filter(v => v?.length > 0).length;
+  const activeCount = [draft.squad, draft.owner, draft.person, draft.track].filter(v => v?.length > 0).length;
 
   return (
     <>

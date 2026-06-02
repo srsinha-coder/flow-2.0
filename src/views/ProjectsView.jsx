@@ -484,6 +484,35 @@ export default function ProjectsView({
     }
   }, [initialId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Map person id → name so the People filter can match whether the project
+  // stores a person by id (owner_id, member person_id) or by name (owner, weekly
+  // history contributors).
+  const idToName = useMemo(() => {
+    const m = new Map();
+    (people || []).forEach(p => { if (p.id != null) m.set(p.id, p.name); });
+    return m;
+  }, [people]);
+
+  // Every person associated with a project — as owner/DRI OR as a team member —
+  // expressed as BOTH their name and id, so the People filter (whose selected
+  // values are names) matches regardless of how the field is stored.
+  const projectPeople = useCallback((proj, m) => {
+    const s = new Set();
+    if (proj.owner) s.add(proj.owner);                 // owner stored as name
+    if (proj.owner_id != null) {
+      s.add(proj.owner_id);                            // owner stored as id
+      const on = idToName.get(proj.owner_id);
+      if (on) s.add(on);                               // resolve id → name
+    }
+    (m?.teamMembers || []).forEach(pid => {            // team members (person ids)
+      s.add(pid);
+      const nm = idToName.get(pid);
+      if (nm) s.add(nm);                               // resolve id → name
+    });
+    (m?.people || []).forEach(nm => s.add(nm));        // weekly history contributors (names)
+    return s;
+  }, [idToName]);
+
   // ── Filter (search + global) ──
   const filtered = useMemo(() => {
     let list = projects;
@@ -498,7 +527,10 @@ export default function ProjectsView({
     if ((globalFilters.squad || []).length > 0) list = list.filter(p => globalFilters.squad.includes(p.squad));
     if (listSquadFilter) list = list.filter(p => p.squad === listSquadFilter);
     if ((globalFilters.person || []).length > 0) {
-      list = list.filter(p => globalFilters.person.some(fp => metrics[p.id]?.people.has(fp)));
+      list = list.filter(p => {
+        const assoc = projectPeople(p, metrics[p.id]);
+        return globalFilters.person.some(fp => assoc.has(fp));
+      });
     }
     if ((globalFilters.track || []).length > 0) {
       list = list.filter(p => globalFilters.track.some(t => (metrics[p.id]?.activeTracks || []).includes(t)));
@@ -520,7 +552,7 @@ export default function ProjectsView({
       });
     }
     return list;
-  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe]);
+  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe, projectPeople]);
 
   // ── Tab splits ──
   // When a search query is active, bypass the tab filter so results surface
@@ -978,6 +1010,18 @@ export default function ProjectsView({
             }}>/</span>}
           </div>
         </div>
+
+        {/* RESULT COUNT — shown when a global filter or search narrows the list */}
+        {viewMode === "registry" && (globalFilters.person?.length || globalFilters.owner?.length || globalFilters.squad?.length || globalFilters.track?.length || search.trim()) ? (
+          <div style={{
+            marginTop: space[2],
+            fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 600,
+            letterSpacing: typo.monoSm.tracking, color: c.textMid,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            Showing <span style={{ color: c.text, fontWeight: 700 }}>{tabProjects.length}</span> of {projects.length} projects
+          </div>
+        ) : null}
       </div>
       {/* end frozen top */}
 
