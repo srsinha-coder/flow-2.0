@@ -335,42 +335,54 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
         );
       })}
 
-      {/* ═══ FOOTER: Today & Ship Date labels ═══ */}
-      <div style={{ display: "flex", height: 20 }}>
-        <div style={{ width: LABEL_W, flexShrink: 0 }} />
-        <div ref={addScrollRef} onScroll={handleScroll} className="flow-gantt-no-scroll" style={scrollStyleHidden}>
-          <div style={{ width: innerW, position: "relative", height: 20 }}>
-            {todayPos > 0 && todayPos < 100 && (
-              <div style={{
-                position: "absolute", left: `${todayPos}%`, top: 3,
-                transform: "translateX(-50%)",
-                fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 700,
-                color: c.accent, letterSpacing: "0.04em", textTransform: "uppercase",
-                whiteSpace: "nowrap",
-              }}>Today</div>
-            )}
-            {endDatePos != null && endDatePos > 0 && endDatePos < 100 && (
-              <div style={{
-                position: "absolute", left: `${endDatePos}%`, top: 3,
-                transform: "translateX(-50%)",
-                fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 600,
-                color: c.textDim, letterSpacing: "0.04em", textTransform: "uppercase",
-                whiteSpace: "nowrap",
-              }}>Ship Date</div>
-            )}
-            {shippedPos != null && shippedPos > 0 && shippedPos < 100 && (
-              <div style={{
-                position: "absolute", left: `${shippedPos}%`, top: 3,
-                transform: "translateX(-50%)",
-                fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 700,
-                color: c.green, letterSpacing: "0.04em", textTransform: "uppercase",
-                whiteSpace: "nowrap",
-              }}>Shipped</div>
-            )}
+      {/* ═══ FOOTER: Today & Ship Date labels — stacked to avoid overlap ═══ */}
+      {(() => {
+        // Collect visible labels with their position (%) and estimated half-width (px)
+        const raw = [
+          todayPos > 0 && todayPos < 100 && { text: "Today", pos: todayPos, color: c.accent, weight: 700, halfW: 18 },
+          endDatePos != null && endDatePos > 0 && endDatePos < 100 && { text: "Ship Date", pos: endDatePos, color: c.textDim, weight: 600, halfW: 26 },
+          shippedPos != null && shippedPos > 0 && shippedPos < 100 && { text: "Shipped", pos: shippedPos, color: c.green, weight: 700, halfW: 22 },
+        ].filter(Boolean).sort((a, b) => a.pos - b.pos);
+
+        // Collision is computed in PERCENT space (positions are already 0-100%
+        // of the inner content, which is scalePct% wide). Convert each label's
+        // pixel half-width to a percent of the inner content.
+        const EST_CONTAINER_PX = 1000;
+        const innerPx = EST_CONTAINER_PX * (scalePct / 100);
+        const PAD_PCT = (6 / innerPx) * 100;
+        const rowRightPct = []; // last label's right-edge (%) per row
+        raw.forEach(lbl => {
+          const halfPct = (lbl.halfW / innerPx) * 100;
+          const leftEdge = lbl.pos - halfPct;
+          let row = 0;
+          while (row < rowRightPct.length && leftEdge < rowRightPct[row] + PAD_PCT) row++;
+          lbl.row = row;
+          rowRightPct[row] = lbl.pos + halfPct;
+        });
+        const rowCount = Math.max(1, rowRightPct.length);
+        const ROW_H = 12;
+        const footerH = 6 + rowCount * ROW_H;
+
+        return (
+          <div style={{ display: "flex", height: footerH }}>
+            <div style={{ width: LABEL_W, flexShrink: 0 }} />
+            <div ref={addScrollRef} onScroll={handleScroll} className="flow-gantt-no-scroll" style={scrollStyleHidden}>
+              <div style={{ width: innerW, position: "relative", height: footerH }}>
+                {raw.map(lbl => (
+                  <div key={lbl.text} style={{
+                    position: "absolute", left: `${lbl.pos}%`, top: 3 + lbl.row * ROW_H,
+                    transform: "translateX(-50%)",
+                    fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: lbl.weight,
+                    color: lbl.color, letterSpacing: "0.04em", textTransform: "uppercase",
+                    whiteSpace: "nowrap",
+                  }}>{lbl.text}</div>
+                ))}
+              </div>
+            </div>
+            <div style={{ width: DAYS_W + ACTION_W, flexShrink: 0 }} />
           </div>
-        </div>
-        <div style={{ width: DAYS_W + ACTION_W, flexShrink: 0 }} />
-      </div>
+        );
+      })()}
     </div>
   );
 }
