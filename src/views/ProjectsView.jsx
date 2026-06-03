@@ -411,6 +411,18 @@ export default function ProjectsView({
   const [boardSquads, setBoardSquads] = useState([]);
   const [boardOwners, setBoardOwners] = useState([]);
   const [boardPhases, setBoardPhases] = useState([]);
+  // "Latest Stage Only" board toggle — de-dupes multi-track projects to their
+  // furthest stage. Persisted within the session so it survives navigating away.
+  const [boardLatestOnly, setBoardLatestOnly] = useState(() => {
+    try { return sessionStorage.getItem("flow_board_latest_only") === "1"; } catch { return false; }
+  });
+  const toggleBoardLatestOnly = useCallback(() => {
+    setBoardLatestOnly(v => {
+      const next = !v;
+      try { sessionStorage.setItem("flow_board_latest_only", next ? "1" : "0"); } catch { /* sessionStorage unavailable */ }
+      return next;
+    });
+  }, []);
   const boardSearchRef = useRef(null);
   const [ganttSearch, setGanttSearch] = useState("");
   const [ganttSquads, setGanttSquads] = useState([]);
@@ -1050,11 +1062,15 @@ export default function ProjectsView({
           PRD: "#D8B4FE", Design: "#A5C8FF", Dev: "#FDE68A", QA: "#99D5DB", Alpha: "#A5D8FF", Beta: "#FCD34D",
         };
 
-        // Columns = the 6 tracks (no GA)
+        // Columns = the 6 tracks (no GA). Stage order is the trackNames order:
+        // PRD → Design → Dev → QA → Alpha → Beta.
         const columns = trackNames;
-        // Build column data: a project appears in every column where it has an active track
+        // Build column data. By default a project appears in every column where it
+        // has an active track. With "Latest Stage Only" ON, it appears only in its
+        // furthest active stage; earlier-stage appearances are counted as hidden.
         const columnProjects = {};
-        columns.forEach(t => { columnProjects[t] = []; });
+        const hiddenByColumn = {};
+        columns.forEach(t => { columnProjects[t] = []; hiddenByColumn[t] = 0; });
         const upcomingBoardProjects = [];
         const shippedBoardProjects = [];
         tabProjects.forEach(proj => {
@@ -1062,8 +1078,17 @@ export default function ProjectsView({
           if (proj.status === "shipped" || proj.status === "complete") { shippedBoardProjects.push(proj); return; }
           const active = getActiveTracks(proj);
           if (active.length === 0) return; // no active tracks, skip
-          active.forEach(t => { if (columnProjects[t]) columnProjects[t].push(proj); });
+          if (boardLatestOnly) {
+            // Furthest active stage = highest index in the fixed stage order.
+            let furthest = null, maxIdx = -1;
+            active.forEach(t => { const i = columns.indexOf(t); if (i > maxIdx) { maxIdx = i; furthest = t; } });
+            if (furthest && columnProjects[furthest]) columnProjects[furthest].push(proj);
+            active.forEach(t => { if (t !== furthest && hiddenByColumn[t] != null) hiddenByColumn[t] += 1; });
+          } else {
+            active.forEach(t => { if (columnProjects[t]) columnProjects[t].push(proj); });
+          }
         });
+        const totalHidden = Object.values(hiddenByColumn).reduce((a, b) => a + b, 0);
 
         // Drag helpers
         const setDragOverPhase = (ph) => { dragOverRef.current = ph; setDragOverPhaseRaw(ph); };
@@ -1193,6 +1218,57 @@ export default function ProjectsView({
             minWidth: columns.length * 180,
             padding: `${space[2]}px 0`,
           }}>
+            {/* ── Board toolbar: Latest Stage Only toggle (right-aligned, summary below) ── */}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: space[1] + 2 }}>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={boardLatestOnly}
+                  onClick={toggleBoardLatestOnly}
+                  title="Projects spanning multiple stages appear only in their most advanced stage"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: space[2],
+                    padding: `5px ${space[3]}px 5px ${space[2]}px`, borderRadius: 999,
+                    border: `1px solid ${boardLatestOnly ? c.accent : c.border}`,
+                    background: boardLatestOnly ? c.accentDim : c.surfaceAlt,
+                    cursor: "pointer",
+                    transition: `background ${motion.fast.duration} ${motion.fast.easing}, border-color ${motion.fast.duration} ${motion.fast.easing}`,
+                  }}
+                >
+                  {/* switch track */}
+                  <span aria-hidden="true" style={{
+                    position: "relative", width: 30, height: 17, borderRadius: 999, flexShrink: 0,
+                    background: boardLatestOnly ? c.accent : c.border,
+                    transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
+                  }}>
+                    <span style={{
+                      position: "absolute", top: 2, left: boardLatestOnly ? 15 : 2,
+                      width: 13, height: 13, borderRadius: "50%", background: "#fff",
+                      boxShadow: c.shadowSm,
+                      transition: `left ${motion.fast.duration} ${motion.fast.easing}`,
+                    }} />
+                  </span>
+                  <span style={{
+                    fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
+                    color: boardLatestOnly ? c.accent : c.textMid, whiteSpace: "nowrap",
+                  }}>Latest Stage Only</span>
+                </button>
+                {boardLatestOnly && (
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
+                    color: c.textMid, letterSpacing: "0.02em", textAlign: "right",
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    De-duplicated{totalHidden > 0 ? ` · ${totalHidden} earlier-stage ${totalHidden === 1 ? "entry" : "entries"} hidden` : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+
             {/* Track columns */}
             <div style={{
               display: "flex", gap: space[3],
@@ -1231,12 +1307,24 @@ export default function ProjectsView({
                         color: phColor, textTransform: "uppercase",
                       }}>{track}</span>
                     </div>
-                    <span style={{
-                      fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
-                      fontWeight: 700, color: c.textMid,
-                      background: c.surfaceAlt, padding: "2px 8px",
-                      borderRadius: layout.radiusPill, border: `1px solid ${c.border}`,
-                    }}>{cards.length}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: space[1] + 2 }}>
+                      {boardLatestOnly && hiddenByColumn[track] > 0 && (
+                        <span
+                          title={`${hiddenByColumn[track]} project${hiddenByColumn[track] === 1 ? "" : "s"} in earlier stages hidden`}
+                          style={{
+                            fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
+                            color: c.textDim, background: "transparent",
+                            padding: "2px 6px", borderRadius: layout.radiusPill,
+                            border: `1px dashed ${c.border}`, whiteSpace: "nowrap",
+                          }}>−{hiddenByColumn[track]} hidden</span>
+                      )}
+                      <span style={{
+                        fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
+                        fontWeight: 700, color: c.textMid,
+                        background: c.surfaceAlt, padding: "2px 8px",
+                        borderRadius: layout.radiusPill, border: `1px solid ${c.border}`,
+                      }}>{cards.length}</span>
+                    </div>
                   </div>
 
                   {/* Cards */}
