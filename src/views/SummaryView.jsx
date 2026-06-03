@@ -3,7 +3,7 @@
 //   1) Weekly digest 2) Pipeline shape 3) What needs attention?
 import React, { useState, useMemo } from "react";
 import { c, typo, space, layout, motion, shipPhases, phaseColors, allPhases, phaseNames, trackNames } from "../styles/theme";
-import { getActiveTracks, getTrackActiveDays } from "../lib/tracks";
+import { getActiveTracks, getTrackActiveDays, isShipped, gaDateOf } from "../lib/tracks";
 import { Surface, Label, EmptyState } from "../components/shared";
 import { KpiGrid, KpiCard, SectionHead, Pill, PillRow } from "../components/kpi";
 import { isDevSeedMode, devStore } from "../data/devSeed";
@@ -99,10 +99,14 @@ function generateWeeklyDigest(projects, allEvents) {
   // filter (squad / owner / people) is active.
   const projIds = new Set(projects.map(p => p.id));
   const scopedEvents = allEvents.filter(e => projIds.has(e.entity_id));
-  const recentEvents = scopedEvents.filter(e => new Date(e.created_at).getTime() >= weekAgo);
 
-  const phaseChanges = recentEvents.filter(e => e.action === "project_phase_changed");
-  const shipEvents = phaseChanges.filter(e => ["Alpha", "Beta", "GA"].includes(e.details?.to));
+  // Shipped = reached GA this week. Derived from project state (GA date) rather
+  // than events, so it catches GA regardless of which event was logged.
+  const shippedThisWeek = projects.filter(p => {
+    if (!isShipped(p)) return false;
+    const d = gaDateOf(p);
+    return d && new Date(d + "T00:00:00").getTime() >= weekAgo;
+  });
   const p0Projects = projects.filter(p => p.priority === "P0" && (p.status === "in_flight" || p.status === "blocked"));
   const blockedProjects = projects.filter(p => p.isBlocked);
 
@@ -163,18 +167,15 @@ function generateWeeklyDigest(projects, allEvents) {
     });
   }
 
-  // ── Shipping — cyan badge, clickable project links ──
-  if (shipEvents.length > 0) {
-    const shipped = shipEvents
-      .map(e => ({ proj: projects.find(p => p.id === e.entity_id), to: e.details.to }))
-      .filter(s => s.proj);
+  // ── Shipped — GA releases this week (e.g. "Returns flow → GA") ──
+  if (shippedThisWeek.length > 0) {
     const segments = [];
-    shipped.forEach((s, i) => {
-      segments.push({ link: { id: s.proj.id, name: s.proj.name } });
-      segments.push({ text: ` → ${s.to}` });
-      segments.push({ text: i < shipped.length - 1 ? ", " : "." });
+    shippedThisWeek.forEach((p, i) => {
+      segments.push({ link: { id: p.id, name: p.name } });
+      segments.push({ text: " → GA" });
+      segments.push({ text: i < shippedThisWeek.length - 1 ? ", " : "." });
     });
-    rows.push({ key: "shipping", badge: { label: "Shipping", color: c.cyan }, segments });
+    rows.push({ key: "shipped", badge: { label: "Shipped", color: c.green }, segments });
   }
 
   // ── (1,2,3) Blockers — amber badge, clickable links, urgent callout ──
@@ -536,6 +537,54 @@ const SummaryView = ({
         </KpiCard>
       </KpiGrid>
 
+      {/* ═══ RECENTLY SHIPPED — directly below the cards, above the digest ═══ */}
+      {(() => {
+        const fmtGA = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null;
+        const gaWithinPeriod = (p) => {
+          const d = gaDateOf(p);
+          if (!d) return false;
+          if (timeframe?.start && timeframe?.end) return d >= timeframe.start && d <= timeframe.end;
+          return true;
+        };
+        // Only GA projects (Alpha/Beta are In Flight, not shipped), most recently GA'd first.
+        const shippedProjects = metrics.shipped
+          .filter(gaWithinPeriod)
+          .sort((a, b) => (gaDateOf(b) || "").localeCompare(gaDateOf(a) || ""));
+        const total = shippedProjects.length;
+        if (total === 0) return null;
+
+        const Chip = ({ p }) => (
+          <button key={p.id} type="button" onClick={() => onNavigate?.("projects", p.id)} style={{
+            display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
+            padding: `${space[2]}px ${space[3]}px`,
+            borderRadius: layout.radiusSm,
+            background: `${c.green}10`,
+            border: `1px solid ${c.green}25`, cursor: "pointer",
+            transition: `border-color ${motion.fast.duration} ${motion.fast.easing}`,
+          }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = c.green}
+            onMouseLeave={e => e.currentTarget.style.borderColor = `${c.green}25`}
+          >
+            <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: c.green, letterSpacing: "0.05em" }}>
+              GA{gaDateOf(p) ? ` · Went live ${fmtGA(gaDateOf(p))}` : ""}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: space[1] }}>
+              <span style={{ fontFamily: typo.monoSm.font, color: c.amber, fontSize: 11 }}>{p.id}</span>
+              <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>{p.name}</span>
+            </span>
+          </button>
+        );
+
+        return (
+          <div>
+            <SectionHead title={`Recently Shipped (${total})`} />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
+              {shippedProjects.slice(0, 18).map(p => <Chip key={p.id} p={p} />)}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ═══ WEEKLY DIGEST ═══ */}
       <div>
         <SectionHead title="Weekly Digest" right={
@@ -662,56 +711,6 @@ const SummaryView = ({
 
       {/* ═══ SCROLLABLE SECTIONS ═══ */}
       <div style={{ display: "flex", flexDirection: "column", gap: space[7] }}>
-
-        {/* ── Recently Shipped ── */}
-        {(() => {
-          // Alpha: in_flight with Alpha track active
-          const alphaProjects = filteredProjects.filter(p => p.status === "in_flight" && (p.tracks ? Object.keys(p.tracks).some(t => t === "Alpha" && p.tracks[t]?.periods?.some(per => per.completed_at === null)) : p.phase === "Alpha"));
-          // Beta: in_flight with Beta track active
-          const betaProjects = filteredProjects.filter(p => p.status === "in_flight" && (p.tracks ? Object.keys(p.tracks).some(t => t === "Beta" && p.tracks[t]?.periods?.some(per => per.completed_at === null)) : p.phase === "Beta"));
-          const shippedProjects = metrics.shipped;
-          const total = alphaProjects.length + betaProjects.length + shippedProjects.length;
-          if (total === 0) return null;
-
-          const Chip = ({ p, label, labelColor, accentColor, rolloutPct }) => (
-            <button key={p.id} type="button" onClick={() => onNavigate?.("projects", p.id)} style={{
-              display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
-              padding: `${space[2]}px ${space[3]}px`,
-              borderRadius: layout.radiusSm,
-              background: `${accentColor}10`,
-              border: `1px solid ${accentColor}25`, cursor: "pointer",
-              transition: `border-color ${motion.fast.duration} ${motion.fast.easing}`,
-            }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = accentColor}
-              onMouseLeave={e => e.currentTarget.style.borderColor = `${accentColor}25`}
-            >
-              <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: labelColor, letterSpacing: "0.05em" }}>
-                {label}{rolloutPct != null ? ` | ${rolloutPct}% rollout` : ""}
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: space[1] }}>
-                <span style={{ fontFamily: typo.monoSm.font, color: c.amber, fontSize: 11 }}>{p.id}</span>
-                <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>{p.name}</span>
-              </span>
-            </button>
-          );
-
-          return (
-            <div>
-              <SectionHead title={`Recently Shipped (${total})`} />
-              <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
-                {alphaProjects.slice(0, 6).map(p => (
-                  <Chip key={p.id} p={p} label="Alpha Release" labelColor="#6D28D9" accentColor="#6D28D9" rolloutPct={p.shipPct ?? null} />
-                ))}
-                {betaProjects.slice(0, 6).map(p => (
-                  <Chip key={p.id} p={p} label="Beta Release" labelColor="#0E7490" accentColor="#0E7490" rolloutPct={p.shipPct ?? null} />
-                ))}
-                {shippedProjects.slice(0, 12).map(p => (
-                  <Chip key={p.id} p={p} label="Shipped" labelColor={c.green} accentColor={c.green} rolloutPct={null} />
-                ))}
-              </div>
-            </div>
-          );
-        })()}
 
         {/* ── Needs Attention ── */}
         {metrics.needsAttention > 0 && (

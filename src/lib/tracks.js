@@ -2,6 +2,25 @@ import { trackNames } from '../styles/theme';
 
 const DAY_MS = 86_400_000;
 
+// ── Project stage classification — single source of truth ──
+//   IN FLIGHT = PRD, Design, Dev, QA, Alpha, Beta   (status "in_flight")
+//   SHIPPED   = GA only                              (status "shipped")
+//   Alpha/Beta are active pre-ship stages, NOT shipped until GA.
+export const IN_FLIGHT_STAGES = ["PRD", "Design", "Dev", "QA", "Alpha", "Beta"];
+
+// A project is "shipped" only once it reaches GA. status "shipped" is set
+// exactly when a project hits GA, so it is the canonical check.
+export function isShipped(proj) {
+  return proj?.status === "shipped";
+}
+
+// The date a project transitioned to GA (its "went live" date), as YYYY-MM-DD.
+export function gaDateOf(proj) {
+  if (!proj) return null;
+  const raw = proj.gaEnteredAt || proj.shippedAt || proj.shipped_at || null;
+  return raw ? String(raw).slice(0, 10) : null;
+}
+
 export function getActiveTracks(proj) {
   if (!proj.tracks) return [];
   return trackNames.filter(name => {

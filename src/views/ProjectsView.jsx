@@ -17,7 +17,7 @@ import { getProjectRole, can as defaultCan } from "../lib/permissions";
 import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB, recordBackdatedTrackInDB } from "../lib/mutations";
-import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition } from "../lib/tracks";
+import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition, gaDateOf } from "../lib/tracks";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
@@ -590,7 +590,9 @@ export default function ProjectsView({
     }
     const sorted = sortList(list, sortKey, sortDir, metrics, today);
     const pinned = sorted.filter(p => pinnedIds.has(p.id));
-    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "shipped");
+    // Shipped (GA) — most recently GA'd first.
+    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "shipped")
+      .sort((a, b) => (gaDateOf(b) || "").localeCompare(gaDateOf(a) || ""));
     const regular = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "in_flight");
     const blocked = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "blocked");
     const depri = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "deprioritized");
@@ -901,8 +903,9 @@ export default function ProjectsView({
             onClick={() => setActiveTab("active")}
             active={activeTab === "active"}
           >
+            {/* In Flight spans PRD → Design → Dev → QA → Alpha → Beta */}
             <PillRow>
-              {["PRD", "Design", "Dev", "QA"].map(t => (
+              {["PRD", "Design", "Dev", "QA", "Alpha", "Beta"].map(t => (
                 <Pill
                   key={t}
                   count={summary.trackCounts?.[t] || 0}
@@ -915,14 +918,13 @@ export default function ProjectsView({
           <KpiCard
             index={1}
             label="Shipped"
-            value={summary.shippedTotal}
+            value={summary.shipped}
             onClick={() => setActiveTab(activeTab === "shipped" ? "all" : "shipped")}
             active={activeTab === "shipped"}
           >
+            {/* Shipped = GA only (Alpha/Beta are In Flight) */}
             <PillRow>
-              <Pill count={summary.shipped} label="Shipped" color={c.green} />
-              <Pill count={summary.alphaActive} label="Alpha" color={pc.Alpha} />
-              <Pill count={summary.betaActive} label="Beta" color={pc.Beta} />
+              <Pill count={summary.shipped} label="GA" color={c.green} />
             </PillRow>
           </KpiCard>
           <KpiCard
@@ -1805,7 +1807,12 @@ export default function ProjectsView({
                           {m.isBlocked && <Tag color={c.red} bg={c.redDim} style={{ flexShrink: 0 }}>BLOCKED</Tag>}
                           {proj.status === "deprioritized" && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>DEPRIORITIZED</Tag>}
                           {isUpcoming && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>UPCOMING</Tag>}
-                          {SHIPPED_PHASES.includes(proj.phase) && <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}>SHIPPED</Tag>}
+                          {proj.status === "shipped" && (
+                            <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}
+                              title={gaDateOf(proj) ? `Went live ${new Date(gaDateOf(proj) + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : "Shipped to GA"}>
+                              {gaDateOf(proj) ? `GA · ${new Date(gaDateOf(proj) + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "GA"}
+                            </Tag>
+                          )}
                         </div>
                       </td>
 
