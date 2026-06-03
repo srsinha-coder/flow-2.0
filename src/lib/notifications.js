@@ -268,8 +268,8 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
     });
   });
 
-  // Role lens + final sort.
-  const filtered = out.filter((n) => passesRole(n, viewer));
+  // Role lens + final sort. FYI tier is intentionally excluded from the feed.
+  const filtered = out.filter((n) => n.tier !== "fyi" && passesRole(n, viewer));
   const tierRank = { action: 0, heads: 1, fyi: 2 };
   filtered.sort((a, b) => {
     if (tierRank[a.tier] !== tierRank[b.tier]) return tierRank[a.tier] - tierRank[b.tier];

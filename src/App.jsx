@@ -15,6 +15,7 @@ import PendingApprovalScreen from "./components/PendingApprovalScreen";
 import QAReviewView from "./views/QAReviewView";
 import OnboardingScreen from "./components/OnboardingScreen";
 import { Header, NAV } from "./components/AppShell";
+import { timeframeForMode, customTimeframe, DEFAULT_TIMEFRAME_MODE } from "./lib/timeframe";
 import SummaryView from "./views/SummaryView";
 import ProjectsView from "./views/ProjectsView";
 import PeopleDeepDive from "./views/PeopleDeepDive";
@@ -236,14 +237,25 @@ function FlowDashboard({ auth }) {
   }), [playToggleSound]);
 
   // ── Timeframe (quarter / custom range) ──
+  // Global Time Period filter — defaults to Week, restored from the session if set.
   const [timeframe, setTimeframe] = useState(() => {
-    const now = new Date();
-    const y = now.getFullYear();
-    const q = Math.floor(now.getMonth() / 3); // 0-3
-    const qStart = new Date(y, q * 3, 1);
-    const qEnd = new Date(y, q * 3 + 3, 0); // last day of quarter
-    return { label: `Q${q + 1}`, year: y, start: qStart.toISOString().slice(0, 10), end: qEnd.toISOString().slice(0, 10) };
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("flow_timeframe") || "null");
+      if (saved?.mode === "custom" && saved.start && saved.end) return customTimeframe(saved.start, saved.end);
+      if (saved?.mode && saved.mode !== "custom") return timeframeForMode(saved.mode, saved.offset || 0);
+    } catch { /* ignore */ }
+    return timeframeForMode(DEFAULT_TIMEFRAME_MODE);
   });
+  // Persist mode (+ offset / custom range) across tab switches / reloads within the session.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("flow_timeframe", JSON.stringify(
+        timeframe.mode === "custom"
+          ? { mode: "custom", start: timeframe.start, end: timeframe.end }
+          : { mode: timeframe.mode, offset: timeframe.offset || 0 }
+      ));
+    } catch { /* ignore */ }
+  }, [timeframe]);
 
   // ── Global filters (header bar) ──
   const [globalFilters, setGlobalFilters] = useState({ owner: [], squad: [], person: [], track: [] });

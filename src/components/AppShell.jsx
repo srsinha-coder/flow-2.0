@@ -10,6 +10,7 @@ import { isDevSeedMode, devStore } from "../data/devSeed";
 import { addProjectCommentToDB } from "../lib/mutations";
 import { timeAgo, fmtAbsolute } from "../lib/time";
 import { buildNotifications } from "../lib/notifications";
+import { timeframeForMode, customTimeframe, presetSummary, todayISO, canGoForward, DEFAULT_TIMEFRAME_MODE } from "../lib/timeframe";
 import FlowLogo from "./FlowLogo";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
@@ -81,8 +82,8 @@ function TimeframePicker({ timeframe, setTimeframe }) {
   const [customMode, setCustomMode] = React.useState(false);
   const [customStart, setCustomStart] = React.useState(timeframe.start);
   const [customEnd, setCustomEnd] = React.useState(timeframe.end);
-  const [yearOffset, setYearOffset] = React.useState(0);
   const ref = React.useRef(null);
+  const today = todayISO();
 
   // Close on outside click
   React.useEffect(() => {
@@ -92,66 +93,86 @@ function TimeframePicker({ timeframe, setTimeframe }) {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const baseYear = new Date().getFullYear() + yearOffset;
-  const currentQ = Math.floor(new Date().getMonth() / 3);
-  const currentYear = new Date().getFullYear();
+  const mode = timeframe.mode || "week";
+  const offset = timeframe.offset || 0;
+  const isDefault = mode === DEFAULT_TIMEFRAME_MODE && offset === 0;
+  const hasArrows = mode !== "custom";
+  const nextDisabled = !canGoForward(offset);
 
-  const selectQuarter = (qi) => {
-    const qm = QUARTER_MONTHS[qi];
-    setTimeframe({
-      label: qm.q,
-      year: baseYear,
-      start: `${baseYear}${qm.start}`,
-      end: `${baseYear}${qm.end}`,
-    });
-    setOpen(false);
-    setCustomMode(false);
-  };
-
+  const selectPreset = (m) => { setTimeframe(timeframeForMode(m, 0)); setOpen(false); setCustomMode(false); };
+  const navigate = (delta) => { if (delta > 0 && nextDisabled) return; setTimeframe(timeframeForMode(mode, offset + delta)); };
+  const reset = () => { setTimeframe(timeframeForMode(DEFAULT_TIMEFRAME_MODE, 0)); setOpen(false); setCustomMode(false); };
+  const customValid = customStart && customEnd && customStart <= customEnd && customEnd <= today;
   const applyCustom = () => {
-    if (!customStart || !customEnd || customStart > customEnd) return;
-    const s = new Date(customStart);
-    const e = new Date(customEnd);
-    const sMonth = s.toLocaleDateString("en-US", { month: "short" });
-    const eMonth = e.toLocaleDateString("en-US", { month: "short" });
-    setTimeframe({
-      label: `${sMonth} - ${eMonth}`,
-      year: s.getFullYear() === e.getFullYear() ? s.getFullYear() : `${s.getFullYear()}-${e.getFullYear()}`,
-      start: customStart,
-      end: customEnd,
-    });
-    setOpen(false);
-    setCustomMode(false);
+    if (!customValid) return;
+    setTimeframe(customTimeframe(customStart, customEnd));
+    setOpen(false); setCustomMode(false);
   };
 
-  // Display label
-  const isCurrentQ = timeframe.year === currentYear && timeframe.label === `Q${currentQ + 1}`;
-  const displayLabel = `${timeframe.label} ${timeframe.year}`;
+  const PRESETS = [
+    { key: "week", name: "Week", ...presetSummary("week") },
+    { key: "month", name: "Month", ...presetSummary("month") },
+    { key: "quarter", name: "Quarter", ...presetSummary("quarter") },
+  ];
+
+  const active = mode !== DEFAULT_TIMEFRAME_MODE || offset !== 0;
+  const chevBtn = (disabled) => ({
+    display: "flex", alignItems: "center", justifyContent: "center",
+    width: 20, height: 24, flexShrink: 0,
+    border: "none", background: "transparent",
+    cursor: disabled ? "default" : "pointer",
+    color: disabled ? c.textGhost || c.border : c.textMid,
+    opacity: disabled ? 0.45 : 1,
+    padding: 0,
+  });
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        style={{
-          display: "flex", alignItems: "center", gap: 5,
-          borderRadius: layout.radiusSm,
-          border: `1px solid ${isCurrentQ ? c.accent + "40" : c.border}`,
-          background: isCurrentQ ? `${c.accent}08` : c.surfaceAlt,
-          padding: `2px ${space[2]}px 2px ${space[2] + 2}px`,
-          cursor: "pointer",
-          fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
-          fontWeight: 700, color: isCurrentQ ? c.accent : c.textMid,
-          letterSpacing: "0.03em",
-          transition: `border-color 150ms, background 150ms`,
-        }}
-      >
-        {displayLabel}
-        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke={c.textDim} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-          style={{ flexShrink: 0, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms" }}>
-          <polyline points="4 6 8 10 12 6" />
-        </svg>
-      </button>
+    <div ref={ref} style={{ position: "relative", display: "inline-flex" }}>
+      {/* Compact pill: ‹ label ▾ › */}
+      <div style={{
+        display: "inline-flex", alignItems: "center",
+        borderRadius: layout.radiusSm, height: 24, overflow: "hidden",
+        border: `1px solid ${active ? c.accent + "40" : c.border}`,
+        background: active ? `${c.accent}08` : c.surfaceAlt,
+        transition: `border-color 150ms, background 150ms`,
+      }}>
+        {hasArrows && (
+          <button type="button" aria-label={`Previous ${mode}`} onClick={() => navigate(-1)} style={chevBtn(false)}
+            onMouseEnter={e => { e.currentTarget.style.color = c.accent; }} onMouseLeave={e => { e.currentTarget.style.color = c.textMid; }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="10 3 5 8 10 13" /></svg>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          title="Time Period"
+          style={{
+            display: "flex", alignItems: "center", gap: 5, height: "100%",
+            border: "none", background: "transparent", cursor: "pointer",
+            padding: `0 ${hasArrows ? 4 : space[2]}px`,
+            fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
+            fontWeight: 700, color: active ? c.accent : c.textMid, letterSpacing: "0.03em",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {!hasArrows && (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.7 }}>
+              <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+            </svg>
+          )}
+          {timeframe.label}
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke={c.textDim} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{ flexShrink: 0, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms" }}>
+            <polyline points="4 6 8 10 12 6" />
+          </svg>
+        </button>
+        {hasArrows && (
+          <button type="button" aria-label={`Next ${mode}`} disabled={nextDisabled} onClick={() => navigate(1)} style={chevBtn(nextDisabled)}
+            onMouseEnter={e => { if (!nextDisabled) e.currentTarget.style.color = c.accent; }} onMouseLeave={e => { if (!nextDisabled) e.currentTarget.style.color = c.textMid; }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 3 11 8 6 13" /></svg>
+          </button>
+        )}
+      </div>
 
       {open && (
         <div style={{
@@ -160,110 +181,108 @@ function TimeframePicker({ timeframe, setTimeframe }) {
           borderRadius: layout.radiusMd,
           border: `1px solid ${c.border}`,
           boxShadow: "0 12px 40px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06)",
-          minWidth: 260,
+          minWidth: 248,
           overflow: "hidden",
         }}>
+          {/* Header label */}
+          <div style={{
+            padding: `${space[2]}px ${space[3]}px`, borderBottom: `1px solid ${c.border}`,
+            fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
+            letterSpacing: "0.08em", textTransform: "uppercase", color: c.textDim,
+          }}>Time Period</div>
+
           {!customMode ? (
-            <>
-              {/* Year selector */}
-              <div style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: `${space[2]}px ${space[3]}px`,
-                borderBottom: `1px solid ${c.border}`,
-                background: c.surfaceAlt,
-              }}>
-                <button type="button" onClick={() => setYearOffset(y => y - 1)} style={{
-                  border: "none", background: "transparent", cursor: "pointer",
-                  fontFamily: typo.monoSm.font, fontSize: 14, color: c.textMid, padding: "2px 6px",
-                  borderRadius: 4,
-                }} onMouseEnter={e => { e.currentTarget.style.background = `${c.border}60`; }} onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>◂</button>
-                <span style={{
-                  fontFamily: typo.monoSm.font, fontSize: 13, fontWeight: 700, color: c.text,
-                }}>{baseYear}</span>
-                <button type="button" onClick={() => setYearOffset(y => y + 1)} style={{
-                  border: "none", background: "transparent", cursor: "pointer",
-                  fontFamily: typo.monoSm.font, fontSize: 14, color: c.textMid, padding: "2px 6px",
-                  borderRadius: 4,
-                }} onMouseEnter={e => { e.currentTarget.style.background = `${c.border}60`; }} onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>▸</button>
-              </div>
+            <div style={{ padding: space[1] }}>
+              {PRESETS.map(opt => {
+                const active = mode === opt.key;
+                return (
+                  <button key={opt.key} type="button" onClick={() => selectPreset(opt.key)} style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3],
+                    padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
+                    border: "none", background: active ? `${c.accent}10` : "transparent", cursor: "pointer",
+                    textAlign: "left", transition: "background 120ms",
+                  }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = c.surfaceAlt; }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+                      <span style={{ width: 14, display: "inline-flex", justifyContent: "center", color: c.accent }}>
+                        {active && (
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 8 6.5 11.5 13 4.5" /></svg>
+                        )}
+                      </span>
+                      <span style={{ fontFamily: typo.bodySm.font, fontSize: 13, fontWeight: 600, color: active ? c.accent : c.text }}>{opt.name}</span>
+                    </span>
+                    <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600, color: active ? c.accent : c.textDim, whiteSpace: "nowrap" }}>
+                      {active ? timeframe.label : opt.label}{opt.key === "quarter" ? ` (${active ? timeframe.sublabel : opt.sublabel})` : ""}
+                    </span>
+                  </button>
+                );
+              })}
 
-              {/* Quarter grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[1], padding: space[2] }}>
-                {QUARTER_MONTHS.map((qm, qi) => {
-                  const isSelected = timeframe.label === qm.q && timeframe.year === baseYear;
-                  const isCurrent = baseYear === currentYear && qi === currentQ;
-                  return (
-                    <button
-                      key={qm.q}
-                      type="button"
-                      onClick={() => selectQuarter(qi)}
-                      style={{
-                        display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
-                        padding: `${space[2]}px ${space[2]}px`,
-                        borderRadius: layout.radiusSm,
-                        border: isSelected ? `2px solid ${c.accent}` : isCurrent ? `1px solid ${c.accent}40` : `1px solid transparent`,
-                        background: isSelected ? `${c.accent}10` : "transparent",
-                        cursor: "pointer",
-                        transition: "background 120ms, border-color 120ms",
-                      }}
-                      onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = c.surfaceAlt; }}
-                      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
-                    >
-                      <span style={{
-                        fontFamily: typo.monoSm.font, fontSize: 13, fontWeight: 700,
-                        color: isSelected ? c.accent : c.text,
-                      }}>{qm.q}</span>
-                      <span style={{
-                        fontFamily: typo.bodySm.font, fontSize: 10,
-                        color: isSelected ? c.accent : c.textDim,
-                      }}>{qm.months}</span>
-                    </button>
-                  );
-                })}
-              </div>
+              {/* Custom */}
+              <button type="button" onClick={() => { setCustomMode(true); setCustomStart(mode === "custom" ? timeframe.start : ""); setCustomEnd(mode === "custom" ? timeframe.end : ""); }} style={{
+                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3],
+                padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
+                border: "none", background: mode === "custom" ? `${c.accent}10` : "transparent", cursor: "pointer",
+                textAlign: "left", transition: "background 120ms",
+              }}
+                onMouseEnter={e => { if (mode !== "custom") e.currentTarget.style.background = c.surfaceAlt; }}
+                onMouseLeave={e => { if (mode !== "custom") e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+                  <span style={{ width: 14, display: "inline-flex", justifyContent: "center", color: c.accent }}>
+                    {mode === "custom" && (
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 8 6.5 11.5 13 4.5" /></svg>
+                    )}
+                  </span>
+                  <span style={{ fontFamily: typo.bodySm.font, fontSize: 13, fontWeight: 600, color: mode === "custom" ? c.accent : c.text }}>Custom</span>
+                </span>
+                <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600, color: mode === "custom" ? c.accent : c.textDim, whiteSpace: "nowrap" }}>
+                  {mode === "custom" ? timeframe.label : "Select date range"}
+                </span>
+              </button>
 
-              {/* Custom range button */}
-              <div style={{ padding: `${space[1]}px ${space[2]}px ${space[2]}px`, borderTop: `1px solid ${c.border}` }}>
-                <button
-                  type="button"
-                  onClick={() => { setCustomMode(true); setCustomStart(timeframe.start); setCustomEnd(timeframe.end); }}
-                  style={{
-                    width: "100%", padding: `${space[2]}px`,
-                    border: "none", background: "transparent",
-                    cursor: "pointer", borderRadius: layout.radiusSm,
-                    fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size,
-                    fontWeight: 600, color: c.textMid, textAlign: "center",
+              {/* Reset to default */}
+              {!isDefault && (
+                <div style={{ borderTop: `1px solid ${c.border}`, marginTop: space[1], paddingTop: space[1] }}>
+                  <button type="button" onClick={reset} style={{
+                    width: "100%", padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
+                    border: "none", background: "transparent", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: space[2],
+                    fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600, color: c.textMid,
                     transition: "background 120ms",
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.background = c.surfaceAlt; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-                >
-                  Custom range...
-                </button>
-              </div>
-            </>
+                    onMouseEnter={e => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.color = c.accent; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = c.textMid; }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
+                    Reset to Week
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
-            /* Custom date range mode */
+            /* Custom date range mode — calendar inputs, To capped at today */
             <div style={{ padding: space[3], display: "flex", flexDirection: "column", gap: space[3] }}>
-              <div style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 700, color: c.text }}>Custom Range</div>
               <div style={{ display: "flex", gap: space[2], alignItems: "center" }}>
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
                   <label style={{ fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>From</label>
-                  <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} style={{
+                  <input type="date" value={customStart} max={customEnd || today} onChange={e => setCustomStart(e.target.value)} style={{
                     fontFamily: typo.monoSm.font, fontSize: 12, color: c.text,
                     padding: `${space[1]}px ${space[2]}px`, borderRadius: layout.radiusSm,
                     border: `1px solid ${c.border}`, background: c.surfaceAlt,
-                    outline: "none", width: "100%",
+                    outline: "none", width: "100%", colorScheme: "light",
                   }} />
                 </div>
                 <span style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, paddingTop: 16 }}>to</span>
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
                   <label style={{ fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>To</label>
-                  <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} style={{
+                  <input type="date" value={customEnd} min={customStart || undefined} max={today} onChange={e => setCustomEnd(e.target.value)} style={{
                     fontFamily: typo.monoSm.font, fontSize: 12, color: c.text,
                     padding: `${space[1]}px ${space[2]}px`, borderRadius: layout.radiusSm,
                     border: `1px solid ${c.border}`, background: c.surfaceAlt,
-                    outline: "none", width: "100%",
+                    outline: "none", width: "100%", colorScheme: "light",
                   }} />
                 </div>
               </div>
@@ -274,11 +293,11 @@ function TimeframePicker({ timeframe, setTimeframe }) {
                   fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
                   color: c.textMid, cursor: "pointer",
                 }}>Back</button>
-                <button type="button" onClick={applyCustom} style={{
+                <button type="button" onClick={applyCustom} disabled={!customValid} style={{
                   padding: `${space[1]}px ${space[3]}px`, borderRadius: layout.radiusSm,
                   border: "none", background: c.accent, color: "#fff",
                   fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
-                  cursor: "pointer", opacity: (!customStart || !customEnd || customStart > customEnd) ? 0.4 : 1,
+                  cursor: customValid ? "pointer" : "default", opacity: customValid ? 1 : 0.4,
                 }}>Apply</button>
               </div>
             </div>
@@ -625,8 +644,15 @@ export function Header({
           myLens={myLens}
         />
 
-        {/* ── Announcements (What's new) ── */}
-        <AnnouncementsBell projects={projects} people={people} currentPerson={currentPerson} onNavigate={onNavigate} />
+        {/* ── Notification bell (urgency-tiered project notifications) ── */}
+        <div className="flow-bell-sm-hide" style={{ display: "flex", alignItems: "center" }}>
+          <NotificationBell
+            projects={projects}
+            people={people}
+            currentPerson={currentPerson}
+            onNavigate={onNavigate}
+          />
+        </div>
 
         {/* ── Terminal button (Settings, Logs & Rant) ── */}
         <button
@@ -642,16 +668,6 @@ export function Header({
         >
           <TerminalIcon size={16} color={["terminal","settings","logs","rant"].includes(activeTab) ? "#84FF95" : "rgba(255,255,255,0.55)"} />
         </button>
-
-        {/* ── Notification bell (urgency-tiered project notifications) ── */}
-        <div className="flow-bell-sm-hide" style={{ display: "flex", alignItems: "center" }}>
-          <NotificationBell
-            projects={projects}
-            people={people}
-            currentPerson={currentPerson}
-            onNavigate={onNavigate}
-          />
-        </div>
 
         {/* ── User avatar + logout ── */}
         {(currentUser?.user || currentPerson) && (
@@ -1698,7 +1714,6 @@ function NotificationBell({ projects = [], people = [], currentPerson, onNavigat
               { key: "all", label: "All", count: totalUnread },
               { key: "action", label: "Action Required", count: unreadByTier.action },
               { key: "heads", label: "Heads Up", count: unreadByTier.heads },
-              { key: "fyi", label: "FYI", count: unreadByTier.fyi },
             ].map(t => {
               const active = tab === t.key;
               const accent = t.key === "action" ? c.red : t.key === "heads" ? c.amber : c.accent;
