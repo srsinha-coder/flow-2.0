@@ -90,6 +90,20 @@ export function canGoForward(offset) {
   return (offset || 0) < 0;
 }
 
+// Rolling 30-day "recently shipped" window for a timeframe: the 30 days leading
+// up to (and including) the period's END date. Works for every mode — Week's end
+// is its Friday, Month/Quarter end on the calendar boundary, Custom ends on the
+// chosen "To" date. Returns { start, end } as ISO YYYY-MM-DD, or null.
+export function shippedLookbackRange(timeframe) {
+  const endStr = timeframe?.end;
+  if (!endStr) return null;
+  const end = new Date(endStr + "T00:00:00");
+  if (Number.isNaN(end.getTime())) return null;
+  const start = new Date(end);
+  start.setDate(end.getDate() - 30);
+  return { start: iso(start), end: iso(end) };
+}
+
 // Compact label for a preset mode at offset 0 (used for the dropdown rows).
 export function presetSummary(mode, ref = new Date()) {
   const tf = timeframeForMode(mode, 0, ref);

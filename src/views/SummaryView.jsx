@@ -4,6 +4,7 @@
 import React, { useState, useMemo } from "react";
 import { c, typo, space, layout, motion, shipPhases, phaseColors, allPhases, phaseNames, trackNames } from "../styles/theme";
 import { getActiveTracks, getTrackActiveDays, isShipped, gaDateOf } from "../lib/tracks";
+import { shippedLookbackRange } from "../lib/timeframe";
 import { Surface, Label, EmptyState } from "../components/shared";
 import { KpiGrid, KpiCard, SectionHead, Pill, PillRow } from "../components/kpi";
 import { isDevSeedMode, devStore } from "../data/devSeed";
@@ -178,12 +179,11 @@ function generateWeeklyDigest(projects, allEvents) {
     rows.push({ key: "shipped", badge: { label: "Shipped", color: c.green }, segments });
   }
 
-  // ── (1,2,3) Blockers — amber badge, clickable links, urgent callout ──
+  // ── (1,2) Blockers — amber badge, clickable links (plain row, no callout) ──
   if (blockedProjects.length > 0) {
     rows.push({
       key: "blockers",
       badge: { label: "Blockers", color: c.amber },
-      callout: true,
       segments: [
         { text: `${blockedProjects.length} project${blockedProjects.length > 1 ? "s" : ""} blocked — ` },
         ...linkSegments(blockedProjects),
@@ -312,8 +312,8 @@ const renderDigestText = (txt) =>
     </React.Fragment>
   ));
 
-// One digest line: badge + linkified text (+ optional trend). Blocker rows
-// render inside an amber alert callout so they stand out as urgent.
+// One digest line: badge + linkified text (+ optional trend). Every row shares
+// the same plain structure — only the badge color differs between them.
 const DigestRow = ({ row, onNavigate }) => {
   const body = (
     <span style={{
@@ -329,16 +329,7 @@ const DigestRow = ({ row, onNavigate }) => {
     </span>
   );
   return (
-    <div style={{
-      display: "flex", alignItems: "baseline", gap: space[2],
-      ...(row.callout ? {
-        background: c.amberDim,
-        border: `1px solid ${c.amberBorder}`,
-        borderLeft: `3px solid ${c.amber}`,
-        borderRadius: layout.radiusSm,
-        padding: `${space[2]}px ${space[3]}px`,
-      } : {}),
-    }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: space[2] }}>
       {row.badge && <DigestBadge label={row.badge.label} color={row.badge.color} />}
       {body}
     </div>
@@ -537,21 +528,17 @@ const SummaryView = ({
         </KpiCard>
       </KpiGrid>
 
-      {/* ═══ RECENTLY SHIPPED — directly below the cards, above the digest ═══ */}
+      {/* ═══ RECENTLY SHIPPED — rolling 30-day lookback from the period's end ═══ */}
       {(() => {
         const fmtGA = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null;
-        const gaWithinPeriod = (p) => {
-          const d = gaDateOf(p);
-          if (!d) return false;
-          if (timeframe?.start && timeframe?.end) return d >= timeframe.start && d <= timeframe.end;
-          return true;
-        };
-        // Only GA projects (Alpha/Beta are In Flight, not shipped), most recently GA'd first.
-        const shippedProjects = metrics.shipped
-          .filter(gaWithinPeriod)
-          .sort((a, b) => (gaDateOf(b) || "").localeCompare(gaDateOf(a) || ""));
+        // Single source of truth: the 30 days up to (and including) the period end.
+        const range = shippedLookbackRange(timeframe);
+        // GA projects (Alpha/Beta are In Flight) that GA'd in the window, newest first.
+        const shippedProjects = (range
+          ? metrics.shipped.filter(p => { const d = gaDateOf(p); return d && d >= range.start && d <= range.end; })
+          : []
+        ).sort((a, b) => (gaDateOf(b) || "").localeCompare(gaDateOf(a) || ""));
         const total = shippedProjects.length;
-        if (total === 0) return null;
 
         const Chip = ({ p }) => (
           <button key={p.id} type="button" onClick={() => onNavigate?.("projects", p.id)} style={{
@@ -578,9 +565,28 @@ const SummaryView = ({
         return (
           <div>
             <SectionHead title={`Recently Shipped (${total})`} />
-            <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
-              {shippedProjects.slice(0, 18).map(p => <Chip key={p.id} p={p} />)}
-            </div>
+            {/* Context subtitle — the 30-day window currently shown */}
+            {range && (
+              <div style={{
+                fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textDim,
+                marginTop: -space[2], marginBottom: space[3],
+              }}>
+                Showing projects shipped {fmtGA(range.start)} — {fmtGA(range.end)}
+              </div>
+            )}
+            {total === 0 ? (
+              <div style={{
+                padding: `${space[4]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+                background: c.surfaceAlt, border: `1px solid ${c.border}`,
+                fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textMid,
+              }}>
+                No projects shipped in the last 30 days of this period
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
+                {shippedProjects.slice(0, 18).map(p => <Chip key={p.id} p={p} />)}
+              </div>
+            )}
           </div>
         );
       })()}
