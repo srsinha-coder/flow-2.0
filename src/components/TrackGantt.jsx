@@ -203,47 +203,28 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
           {(proj.startDate || proj.endDate || proj.tentativeStartDate) && (() => {
             const milestone = getReleaseMilestone(proj);
             const history = proj.statusHistory || [];
-            const hasHistory = history.length > 0;
 
-            if (hasHistory) {
-              // Segmented: start → first pause date (red/grey) | last resume → end
-              const sorted = [...history].sort((a, b) => toDay(a.from) - toDay(b.from));
-              const firstPause = sorted[0];
-              const lastResume = [...sorted].reverse().find(h => h.to)?.to || null;
-              const pauseColor = firstPause.type === "blocked" ? c.red : c.textDim;
-              // Total active days = total span minus sum of paused durations
-              const startMs = toDay(proj.startDate || proj.tentativeStartDate);
-              const endMs = toDay(proj.endDate) || Date.now();
-              let pausedMs = 0;
-              for (const h of history) {
-                const f = toDay(h.from); const t = h.to ? toDay(h.to) : Date.now();
-                if (f && t > f) pausedMs += t - f;
-              }
-              const activeDays = Math.max(0, Math.round(((endMs - startMs) - pausedMs) / DAY_MS));
-              return (
-                <span style={{
-                  fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
-                  color: c.textMid, fontVariantNumeric: "tabular-nums",
-                }}>
-                  {fmtShort(proj.startDate || proj.tentativeStartDate)}
-                  {" → "}
-                  <span style={{ color: pauseColor, fontWeight: 700 }}>{fmtShort(firstPause.from)}</span>
-                  {lastResume && (() => {
-                    // If the planned end date is already past (overdue while
-                    // blocked), clamp the second segment to "→ Today".
-                    const endPast = !proj.endDate || toDay(proj.endDate) < Date.now();
-                    return <>{"  |  "}{fmtShort(lastResume)}{" → "}{endPast ? "Today" : fmtShort(proj.endDate)}</>;
-                  })()}
-                  <span style={{ color: c.textDim, fontWeight: 500 }}>{"  ["}{activeDays} active days{"]"}</span>
-                </span>
-              );
+            // Active days = span (start → end, or → today) minus paused (blocked/depri) durations
+            const startMs = toDay(proj.startDate || proj.tentativeStartDate);
+            const endMs = toDay(proj.endDate) || Date.now();
+            let pausedMs = 0;
+            for (const h of history) {
+              const f = toDay(h.from); const t = h.to ? toDay(h.to) : Date.now();
+              if (f && t > f) pausedMs += t - f;
             }
+            const activeDays = startMs != null ? Math.max(0, Math.round(((endMs - startMs) - pausedMs) / DAY_MS)) : null;
+            const activeDaysLabel = activeDays != null
+              ? <span style={{ color: c.textDim, fontWeight: 500 }}>{"  ["}{activeDays} active days{"]"}</span>
+              : null;
+            const monoStyle = {
+              fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
+              color: c.textMid, fontVariantNumeric: "tabular-nums",
+            };
 
+            // Default (active / blocked / unblocked / deprioritized / shipped):
+            // original Start → End [active days], with release milestone if any
             return (
-              <span style={{
-                fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
-                color: c.textMid, fontVariantNumeric: "tabular-nums",
-              }}>
+              <span style={monoStyle}>
                 {fmtShort(proj.startDate || proj.tentativeStartDate)}
                 {" → "}
                 {fmtShort(proj.endDate)}
@@ -252,6 +233,7 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                     {"  ·  "}{milestone.stage} on {fmtShort(milestone.date)}
                   </span>
                 )}
+                {activeDaysLabel}
               </span>
             );
           })()}

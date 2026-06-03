@@ -29,18 +29,21 @@ const EDIT_WINDOW_MS = 15 * 60 * 1000;
 const WEEKLY_UPDATE_TAG = "[weekly-update]";
 
 // ── Avatar ──────────────────────────────────────────────────────────
-function Avatar({ name, size = 28, accent = false }) {
+function Avatar({ name, size = 28, accent = false, white = false }) {
+  const bg = white ? (c.surfaceSolid || "#fff") : accent ? c.accentDim : c.cyanDim;
+  const fg = white ? c.text : accent ? c.accent : c.cyan;
+  const bd = white ? c.border : (accent ? c.accent : c.cyan) + "33";
   return (
     <div
       aria-hidden="true"
       style={{
         width: size, height: size, borderRadius: "50%",
-        background: accent ? c.accentDim : c.cyanDim,
-        color: accent ? c.accent : c.cyan,
+        background: bg,
+        color: fg,
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         fontFamily: mono, fontSize: Math.max(10, size * 0.4), fontWeight: 700,
         flexShrink: 0,
-        border: `1px solid ${(accent ? c.accent : c.cyan) + "33"}`,
+        border: `1px solid ${bd}`,
       }}
     >
       {initialsOf(name)}
@@ -168,14 +171,15 @@ function MembersRow({ ownerPerson, memberPeople, canManage, canRemove = true, on
           onClick={() => onPersonNavigate?.(person?.name)}
           style={{
             display: "inline-flex", alignItems: "center", gap: 8,
-            padding: `6px 12px 6px 6px`, borderRadius: 12,
+            height: 46, boxSizing: "border-box",
+            padding: `0 12px 0 6px`, borderRadius: 12,
             background: c.surfaceAlt, border: `1px solid ${c.border}`,
             cursor: "pointer", transition: "border-color 120ms ease",
           }}
           onMouseEnter={e => { e.currentTarget.style.borderColor = c.textMid; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; }}
         >
-          <Avatar name={person?.name} size={32} accent={isOwner} />
+          <Avatar name={person?.name} size={32} accent={isOwner} white />
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1 }}>
             <span style={{ fontFamily: body, fontSize: 13, fontWeight: 600, color: c.text, whiteSpace: "nowrap", lineHeight: 1.2 }}>
               {person?.name || "Unknown"}

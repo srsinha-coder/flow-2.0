@@ -217,6 +217,8 @@ export function useSyncedSetters({
 
     setTimeout(async () => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Dev-seed mode: persist the squads list to localStorage so it survives reloads.
+      if (isDevSeedMode()) devStore.persistSquads(next);
       if (next.length > prev.length) {
         const added = next.find(s => !prev.includes(s));
         if (added) {
@@ -241,10 +243,18 @@ export function useSyncedSetters({
             const ok = await renameSquadInDB(prev[i], next[i]);
             logSettingsChange('rename_squad', { from: prev[i], to: next[i] });
             // Keep in-memory people/projects in sync so UI reflects the new
-            // squad name immediately. Uses rawSetPeople/rawSetProjects —
-            // bypasses per-row DB-write loops since squad_id FK is unchanged.
-            rawSetPeople(list => list.map(p => p.squad === prev[i] ? { ...p, squad: next[i] } : p));
-            rawSetProjects(list => list.map(pr => pr.squad === prev[i] ? { ...pr, squad: next[i] } : pr));
+            // squad name immediately. In dev-seed mode also persist the cascade.
+            if (isDevSeedMode()) {
+              const updatedPeople = peopleRef.current.map(p => p.squad === prev[i] ? { ...p, squad: next[i] } : p);
+              const updatedProjects = projectsRef.current.map(pr => pr.squad === prev[i] ? { ...pr, squad: next[i] } : pr);
+              rawSetPeople(updatedPeople);
+              rawSetProjects(updatedProjects);
+              devStore.persistPeople(updatedPeople);
+              devStore.persistProjects(updatedProjects);
+            } else {
+              rawSetPeople(list => list.map(p => p.squad === prev[i] ? { ...p, squad: next[i] } : p));
+              rawSetProjects(list => list.map(pr => pr.squad === prev[i] ? { ...pr, squad: next[i] } : pr));
+            }
             if (ok) window.__flowSyncToast?.done?.(next[i]);
             else window.__flowSyncToast?.error?.(next[i]);
           }
@@ -260,6 +270,8 @@ export function useSyncedSetters({
 
     setTimeout(async () => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Dev-seed mode: persist the roles list to localStorage so it survives reloads.
+      if (isDevSeedMode()) devStore.persistRoles(next);
       if (next.length > prev.length) {
         const added = next.find(r => !prev.includes(r));
         if (added) {
@@ -283,9 +295,15 @@ export function useSyncedSetters({
             window.__flowSyncToast?.show?.(next[i]);
             const ok = await renameRoleInDB(prev[i], next[i]);
             logSettingsChange('rename_role', { from: prev[i], to: next[i] });
-            // Refresh in-memory role field on affected people without
-            // triggering per-person DB writes (their role_id is unchanged).
-            rawSetPeople(list => list.map(p => p.role === prev[i] ? { ...p, role: next[i] } : p));
+            // Refresh in-memory role field on affected people. In dev-seed mode
+            // also persist the cascade so holders keep the renamed role on reload.
+            if (isDevSeedMode()) {
+              const updatedPeople = peopleRef.current.map(p => p.role === prev[i] ? { ...p, role: next[i] } : p);
+              rawSetPeople(updatedPeople);
+              devStore.persistPeople(updatedPeople);
+            } else {
+              rawSetPeople(list => list.map(p => p.role === prev[i] ? { ...p, role: next[i] } : p));
+            }
             if (ok) window.__flowSyncToast?.done?.(next[i]);
             else window.__flowSyncToast?.error?.(next[i]);
           }

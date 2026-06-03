@@ -716,6 +716,9 @@ export function Header({
             {globalFilters.track?.length > 0 && (
               <FilterChip label={`Track: ${globalFilters.track.join(", ")}`} onClick={() => removeAppliedFilter("track")} />
             )}
+            {globalFilters.type?.length > 0 && (
+              <FilterChip label={`Type: ${globalFilters.type.join(", ")}`} onClick={() => removeAppliedFilter("type")} />
+            )}
           </div>
         )}
 
@@ -752,6 +755,16 @@ export function Header({
         </button>
         )}
       </div>
+    )}
+    {/* Detail mode has no context bar — a page-colored rounded cap so the content
+        sheet curves under the black header (the corners reveal the black behind). */}
+    {!showContextBar && (
+      <div aria-hidden style={{
+        height: 18,
+        background: c.bg,
+        borderRadius: `${layout.radiusLg}px ${layout.radiusLg}px 0 0`,
+        position: "relative", zIndex: 1,
+      }} />
     )}
     </div>
     {/* ═══ END SCROLL-AWARE HEADER WRAPPER ═══ */}
@@ -983,13 +996,15 @@ function FilterDrawer({
   }, [open, onClose]);
 
   const allTracks = ["PRD", "Design", "Dev", "QA", "Alpha", "Beta"];
+  const allTypes = ["New Feature", "Bug Fix", "Enhancement", "Tech"];
   const filterGroups = [
     { key: "squad",  label: "Squad",  options: allSquads },
     { key: "owner",  label: "Owner",  options: allOwners },
     { key: "track",  label: "Track",  options: allTracks },
+    { key: "type",   label: "Type",   options: allTypes },
   ];
 
-  const activeCount = [draft.squad, draft.owner, draft.track].filter(v => v?.length > 0).length;
+  const activeCount = [draft.squad, draft.owner, draft.track, draft.type].filter(v => v?.length > 0).length;
 
   return (
     <>
@@ -1085,7 +1100,7 @@ function FilterDrawer({
               key={group.key}
               label={group.label}
               options={group.options}
-              value={draft[group.key]}
+              value={draft[group.key] || []}
               onChange={v => setDraft(d => ({ ...d, [group.key]: v }))}
             />
           ))}

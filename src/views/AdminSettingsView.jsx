@@ -63,14 +63,6 @@ export default function AdminSettingsView({ onBack, appSettings = {}, setAppSett
   const [gaSaving, setGaSaving] = useState(false);
   const [gaToast, setGaToast] = useState(null);
 
-  const DEFAULT_THRESHOLDS = { PRD: 14, Design: 21, Dev: 28, QA: 14, Alpha: 7, Beta: 14, GA: null };
-  const parsedDefaults = useMemo(() => {
-    try { return appSettings.phase_duration_defaults ? JSON.parse(appSettings.phase_duration_defaults) : DEFAULT_THRESHOLDS; }
-    catch { return DEFAULT_THRESHOLDS; }
-  }, [appSettings.phase_duration_defaults]);
-  const [phaseThresholds, setPhaseThresholds] = useState(parsedDefaults);
-  const [phaseSaving, setPhaseSaving] = useState(false);
-  const [phaseToast, setPhaseToast] = useState(null);
   const [newStatus, setNewStatus] = useState("");
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
@@ -196,26 +188,6 @@ export default function AdminSettingsView({ onBack, appSettings = {}, setAppSett
       setTimeout(() => setGaToast(null), 3000);
     } finally {
       setGaSaving(false);
-    }
-  };
-
-  const handlePhaseSave = async () => {
-    setPhaseSaving(true);
-    try {
-      const val = JSON.stringify(phaseThresholds);
-      const { error } = await supabase
-        .from("app_settings")
-        .upsert({ key: "phase_duration_defaults", value: val, updated_at: new Date().toISOString() });
-      if (error) throw error;
-      if (setAppSettings) setAppSettings(prev => ({ ...prev, phase_duration_defaults: val }));
-      setPhaseToast("Saved");
-      setTimeout(() => setPhaseToast(null), 2500);
-    } catch (err) {
-      console.error("Phase settings save failed:", err);
-      setPhaseToast("Failed to save");
-      setTimeout(() => setPhaseToast(null), 3000);
-    } finally {
-      setPhaseSaving(false);
     }
   };
 
@@ -513,68 +485,6 @@ export default function AdminSettingsView({ onBack, appSettings = {}, setAppSett
           {gaToast && (
             <span style={{ fontSize: 11, color: gaToast === "Saved" ? c.green : c.red, fontFamily: MONO, marginLeft: 8 }}>
               {gaToast}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Phase Duration Thresholds */}
-      <div style={{
-        border: `1px solid ${terminal.gold}20`, borderRadius: terminalRadius.md, padding: space[4],
-        background: `${terminal.gold}05`, marginBottom: space[5],
-      }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: c.orange, letterSpacing: "0.08em", marginBottom: space[3] }}>
-          PHASE DURATION THRESHOLDS
-        </div>
-        <div style={{ fontSize: 13, color: "rgba(0,0,0,0.5)", marginBottom: space[3], lineHeight: 1.6 }}>
-          Max days a project should stay in each phase before triggering an overstay alert.
-          Leave blank to disable alerts for that phase.
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
-          {["PRD", "Design", "Dev", "QA", "Alpha", "Beta", "GA"].map(phase => (
-            <div key={phase} style={{ display: "flex", alignItems: "center", gap: space[3] }}>
-              <span style={{ width: 60, fontSize: 12, fontWeight: 600, color: c.text, fontFamily: MONO }}>{phase}</span>
-              <input
-                type="number"
-                min="0"
-                max="365"
-                value={phaseThresholds[phase] ?? ""}
-                placeholder="—"
-                onChange={e => {
-                  const v = e.target.value === "" ? null : parseInt(e.target.value, 10);
-                  setPhaseThresholds(prev => ({ ...prev, [phase]: v }));
-                }}
-                style={{
-                  width: 64, background: c.bg, border: `1px solid ${terminal.gold}30`,
-                  borderRadius: terminalRadius.sm, padding: "6px 10px",
-                  fontFamily: MONO, fontSize: 13, color: c.text,
-                  textAlign: "center", outline: "none",
-                }}
-                onFocus={e => e.target.style.borderColor = c.orange}
-                onBlur={e => e.target.style.borderColor = `${terminal.gold}30`}
-              />
-              <span style={{ fontSize: 11, color: "rgba(0,0,0,0.38)", fontFamily: MONO }}>days</span>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: space[3], marginTop: space[3] }}>
-          <button
-            onClick={handlePhaseSave}
-            disabled={phaseSaving}
-            style={{
-              background: c.orange, color: c.bg, border: "none",
-              borderRadius: terminalRadius.sm, padding: "6px 16px",
-              fontFamily: MONO, fontSize: 11, fontWeight: 700,
-              cursor: phaseSaving ? "wait" : "pointer",
-              opacity: phaseSaving ? 0.5 : 1,
-              transition: "background 0.15s ease, opacity 0.15s ease",
-            }}
-          >
-            {phaseSaving ? "..." : "Save thresholds"}
-          </button>
-          {phaseToast && (
-            <span style={{ fontSize: 11, color: phaseToast === "Saved" ? c.green : c.red, fontFamily: MONO }}>
-              {phaseToast}
             </span>
           )}
         </div>

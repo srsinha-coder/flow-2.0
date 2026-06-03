@@ -1,6 +1,4 @@
 import { useMemo, useState, useCallback } from "react";
-import { trackNames } from "../styles/theme";
-import { getActiveTracks, getTrackActiveDays } from "../lib/tracks";
 
 const FROZEN_DAYS = 7;
 const NEW_PROJECT_HOURS = 24;
@@ -29,22 +27,6 @@ export default function useAlerts(projects, phaseDurationDefaults) {
       if (p.lastActivityAt && new Date(p.lastActivityAt).getTime() >= dayAgo) {
         result.push({ id: `new-${p.id}`, type: "new_project", projectId: p.id, projectName: p.name,
           squad: p.squad, message: "New project", severity: "info" });
-      }
-
-      if (p.status !== "shipped" && phaseDurationDefaults) {
-        const active = getActiveTracks(p);
-        for (const trackName of active) {
-          const overrides = p.phaseDurationOverrides || {};
-          const threshold = overrides[trackName] ?? phaseDurationDefaults[trackName];
-          if (threshold) {
-            const daysInTrack = getTrackActiveDays(p, trackName);
-            if (daysInTrack > threshold) {
-              result.push({ id: `overstay-${p.id}-${trackName}`, type: "phase_overstay", projectId: p.id, projectName: p.name,
-                squad: p.squad, phase: trackName, days: daysInTrack, threshold,
-                message: `${trackName} for ${daysInTrack}d (limit ${threshold}d)`, severity: "warning" });
-            }
-          }
-        }
       }
 
       const frozenCheck = p.lastActivityAt ? (now - new Date(p.lastActivityAt).getTime()) / 86_400_000 : Infinity;

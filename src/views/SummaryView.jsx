@@ -36,27 +36,18 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
     return diff > FROZEN_DAYS;
   });
 
-  const phaseOverstay = active.filter(p => {
-    const overrides = p.phaseDurationOverrides || {};
-    const threshold = overrides[p.phase] ?? phaseDurationDefaults?.[p.phase];
-    if (!threshold) return false;
-    if (!p.lastActivityAt) return false;
-    const daysInPhase = Math.floor((todayMs - new Date(p.lastActivityAt).getTime()) / 86_400_000);
-    return daysInPhase > threshold;
-  });
-
   const overdue = active.filter(p => {
     if (!p.endDate) return false;
     const end = new Date(p.endDate + "T00:00:00");
     return end.getTime() < todayMs;
   });
 
-  const needsAttention = blocked.length + frozen.length + phaseOverstay.length + overdue.length;
+  const needsAttention = blocked.length + frozen.length + overdue.length;
 
   return {
     active, shipped, blocked, deprioritized, upcoming,
     byPhase, byPriority,
-    frozen, phaseOverstay, overdue,
+    frozen, overdue,
     needsAttention,
   };
 }
@@ -511,30 +502,6 @@ const SummaryView = ({
                           }}>FROZEN</span>
                         </td>
                         <td style={{ ...tdBase, textAlign: "left", fontFamily: typo.bodyMd.font, color: c.textMid }}>No update in {daysSince}d</td>
-                      </tr>
-                    );
-                  })}
-                  {/* Sloth / Phase Overstay */}
-                  {metrics.phaseOverstay.filter(p => !metrics.blocked.includes(p)).map(p => {
-                    const overrides = p.phaseDurationOverrides || {};
-                    const threshold = overrides[p.phase] ?? phaseDurationDefaults?.[p.phase];
-                    const days = p.lastActivityAt ? Math.floor((Date.now() - new Date(p.lastActivityAt).getTime()) / 86_400_000) : "?";
-                    return (
-                      <tr key={`sloth-${p.id}`} className="flow-row" style={{ cursor: "pointer" }} onClick={() => onNavigate?.("projects", p.id)}>
-                        <td style={{ ...tdBase, textAlign: "left" }}>
-                          <span style={{ fontFamily: typo.monoSm.font, color: c.amber, marginRight: 6 }}>{p.id}</span>
-                          <span style={{ fontFamily: typo.bodyMd.font, color: c.text }}>{p.name}</span>
-                        </td>
-                        <td style={{ ...tdBase, textAlign: "left", fontFamily: typo.bodyMd.font, color: c.textMid }}>{p.squad}</td>
-
-                        <td style={{ ...tdBase }}>
-                          <span style={{
-                            fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 700,
-                            color: c.amber, background: `${c.amber}12`,
-                            padding: "2px 8px", borderRadius: layout.radiusXs,
-                          }}>SLOTH</span>
-                        </td>
-                        <td style={{ ...tdBase, textAlign: "left", fontFamily: typo.bodyMd.font, color: c.textMid }}>{days}d in {p.phase} (threshold: {threshold}d)</td>
                       </tr>
                     );
                   })}

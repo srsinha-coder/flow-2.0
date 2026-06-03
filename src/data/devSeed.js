@@ -769,6 +769,13 @@ export const seedProjects = [
   },
 ];
 
+// Assign a deterministic project type to any seed project missing one,
+// so the Type filter has data to work with in dev-seed mode.
+const PROJECT_TYPES = ["New Feature", "Bug Fix", "Enhancement", "Tech"];
+seedProjects.forEach((p, i) => {
+  if (!p.type) p.type = PROJECT_TYPES[i % PROJECT_TYPES.length];
+});
+
 // ── In-memory mutable store for comments / members / events ────────
 // Subscribers receive `{ type: 'comments'|'members'|'events', projectId, change }`
 // after every mutation so hooks can refresh.
@@ -1541,6 +1548,8 @@ import { migrateProjectToTracks, derivePrimaryPhase } from '../lib/tracks';
 const STORAGE_KEY_STATE = "flow_devstore_state";
 const STORAGE_KEY_PROJECTS = "flow_devstore_projects";
 const STORAGE_KEY_PEOPLE = "flow_devstore_people";
+const STORAGE_KEY_ROLES = "flow_devstore_roles";
+const STORAGE_KEY_SQUADS = "flow_devstore_squads";
 
 function _persistState() {
   try { localStorage.setItem(STORAGE_KEY_STATE, JSON.stringify(_state)); } catch { /* quota */ }
@@ -1550,6 +1559,12 @@ function _persistProjects() {
 }
 function _persistPeople() {
   try { localStorage.setItem(STORAGE_KEY_PEOPLE, JSON.stringify(seedPeople)); } catch { /* quota */ }
+}
+function _persistRoles() {
+  try { localStorage.setItem(STORAGE_KEY_ROLES, JSON.stringify(seedRoles)); } catch { /* quota */ }
+}
+function _persistSquads() {
+  try { localStorage.setItem(STORAGE_KEY_SQUADS, JSON.stringify(seedSquads)); } catch { /* quota */ }
 }
 
 // Hydrate seedPeople from localStorage so role/squad/admin edits survive reload
@@ -1561,6 +1576,32 @@ function _persistPeople() {
       if (Array.isArray(arr) && arr.length) {
         seedPeople.length = 0;
         arr.forEach(p => seedPeople.push(p));
+      }
+    }
+  } catch { /* ignore */ }
+})();
+
+// Hydrate seedRoles / seedSquads from localStorage so Settings edits survive reload
+(() => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_ROLES);
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr) && arr.length) {
+        seedRoles.length = 0;
+        arr.forEach(r => seedRoles.push(r));
+      }
+    }
+  } catch { /* ignore */ }
+})();
+(() => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_SQUADS);
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr) && arr.length) {
+        seedSquads.length = 0;
+        arr.forEach(s => seedSquads.push(s));
       }
     }
   } catch { /* ignore */ }
@@ -1589,6 +1630,8 @@ function _persistPeople() {
       if (Array.isArray(parsed) && parsed.length > 0) {
         seedProjects.length = 0;
         parsed.forEach(p => seedProjects.push(p));
+        // Backfill type for projects persisted before the type field existed
+        seedProjects.forEach((p, i) => { if (!p.type) p.type = PROJECT_TYPES[i % PROJECT_TYPES.length]; });
       }
     }
   } catch { /* corrupt data, use seed defaults */ }
@@ -1779,6 +1822,24 @@ export const devStore = {
     seedPeople.length = 0;
     peopleArray.forEach(p => seedPeople.push(p));
     _persistPeople();
+  },
+
+  // ── Roles / Squads persistence (Settings edits survive reload) ──
+  // Accepts an array of name strings; rebuilds {id, name} objects, reusing the
+  // existing id when the name is unchanged so identity is preserved.
+  persistRoles(roleNames) {
+    const byName = new Map(seedRoles.map(r => [r.name, r]));
+    const next = roleNames.map(name => byName.get(name) || { id: `role-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, name });
+    seedRoles.length = 0;
+    next.forEach(r => seedRoles.push(r));
+    _persistRoles();
+  },
+  persistSquads(squadNames) {
+    const byName = new Map(seedSquads.map(s => [s.name, s]));
+    const next = squadNames.map(name => byName.get(name) || { id: `squad-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, name });
+    seedSquads.length = 0;
+    next.forEach(s => seedSquads.push(s));
+    _persistSquads();
   },
 
   // ── Realtime-ish subscription ────────────────────────────────

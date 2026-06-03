@@ -135,19 +135,6 @@ function GanttMultiFilter({ label, options, selected, onToggle, onClear }) {
   );
 }
 
-// Complexity-based phase thresholds (days). No threshold for Alpha/Beta/GA.
-const COMPLEXITY_THRESHOLDS = {
-  S:  { PRD: 3,  Design: 3,  Dev: 7,  QA: 3 },
-  M:  { PRD: 5,  Design: 10, Dev: 14, QA: 5 },
-  L:  { PRD: 10, Design: 14, Dev: 21, QA: 7 },
-  XL: { PRD: 10, Design: 14, Dev: 21, QA: 7 },
-};
-const DEFAULT_THRESHOLDS = COMPLEXITY_THRESHOLDS.M;
-function getPhaseThreshold(complexity, phase) {
-  const map = COMPLEXITY_THRESHOLDS[complexity] || DEFAULT_THRESHOLDS;
-  return map[phase] ?? null;
-}
-
 /* ══════════════════════════════════════════════════════════════════
    DATA DERIVATION — full-history metrics per project
    ══════════════════════════════════════════════════════════════════ */
@@ -214,27 +201,18 @@ function deriveProjectMetrics(projects, history, today) {
     // Active tracks
     m.activeTracks = getActiveTracks(proj);
 
-    // Phase overstay tracking (per-track: use longest active track)
-    const overrides = proj.phaseDurationOverrides || {};
+    // Days in current phase (longest active track, or age if none active)
     {
       let maxDaysInTrack = 0;
-      let trackThreshold = null;
       if (m.activeTracks.length > 0) {
         for (const t of m.activeTracks) {
           const days = getTrackActiveDays(proj, t);
-          const th = overrides[t] ?? getPhaseThreshold(proj.complexity, t);
-          if (days > maxDaysInTrack) {
-            maxDaysInTrack = days;
-            trackThreshold = th;
-          }
+          if (days > maxDaysInTrack) maxDaysInTrack = days;
         }
       } else {
-        const age = daysBetween(proj.startDate, today);
-        maxDaysInTrack = age;
-        trackThreshold = overrides[proj.phase] ?? getPhaseThreshold(proj.complexity, proj.phase);
+        maxDaysInTrack = daysBetween(proj.startDate, today);
       }
       m.daysInPhase = maxDaysInTrack;
-      m.phaseThreshold = trackThreshold;
     }
 
     // At Risk: overdue OR no activity in 1 week OR blocked
@@ -503,6 +481,7 @@ export default function ProjectsView({
     if ((globalFilters.track || []).length > 0) {
       list = list.filter(p => globalFilters.track.some(t => (metrics[p.id]?.activeTracks || []).includes(t)));
     }
+    if ((globalFilters.type || []).length > 0) list = list.filter(p => globalFilters.type.includes(p.type));
     // My Lens: show only followed projects (auto-followed squad + explicit follows)
     if (myLens) {
       list = list.filter(p => followedProjects.includes(p.id));
@@ -1268,8 +1247,8 @@ export default function ProjectsView({
                                 color: ec.project,
                               }}>{proj.id}</span>
                               {proj.priority && (() => {
-                                const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                                const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
+                                const pColors = { P0: c.red, P1: c.textMid, P2: c.textMid, P3: c.textGhost };
+                                const pBg = { P0: c.redDim, P1: c.surfaceAlt, P2: c.surfaceAlt, P3: c.surfaceAlt };
                                 return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt} style={{ fontSize: 9, padding: "1px 5px" }}>{proj.priority}</Tag>;
                               })()}
                             </div>
@@ -1442,8 +1421,8 @@ export default function ProjectsView({
                       <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
                         <span style={{ fontFamily: typo.monoMd.font, fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", color: ec.project }}>{proj.id}</span>
                         {proj.priority && (() => {
-                          const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                          const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
+                          const pColors = { P0: c.red, P1: c.textMid, P2: c.textMid, P3: c.textGhost };
+                          const pBg = { P0: c.redDim, P1: c.surfaceAlt, P2: c.surfaceAlt, P3: c.surfaceAlt };
                           return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt} style={{ fontSize: 9, padding: "1px 5px" }}>{proj.priority}</Tag>;
                         })()}
                       </div>
@@ -1567,7 +1546,7 @@ export default function ProjectsView({
                   <Th col="priority" style={{ minWidth: 50, textAlign: "center" }}>Pri</Th>
                   <Th col="owner" style={{ minWidth: 80 }}>Owner</Th>
                   <Th col="tracks" style={{ minWidth: 90, textAlign: "center" }}>Tracks</Th>
-                  <Th col="people" style={{ minWidth: 70, textAlign: "center" }}>Team</Th>
+                  <Th col="people" style={{ minWidth: 70, textAlign: "center" }}>Members</Th>
                   <Th col="last" style={{ minWidth: 80, textAlign: "center" }}>Updated</Th>
                   <Th col="timeline" style={{ minWidth: colWidths.timeline?.min || 110, textAlign: "center" }}>Timeline</Th>
                   {toggleFollowProject && <th style={{ width: 32, padding: 0, position: "sticky", top: "var(--flow-sticky-top, 0px)", zIndex: 10, background: "rgba(232, 232, 232, 0.72)", backdropFilter: "blur(16px) saturate(1.3)", WebkitBackdropFilter: "blur(16px) saturate(1.3)", borderBottom: `1px solid rgba(0,0,0,0.13)` }} />}
@@ -1686,8 +1665,8 @@ export default function ProjectsView({
                       }}>
                         {(() => {
                           const pri = proj.priority || "P2";
-                          const pColors = { P0: c.red, P1: c.amber, P2: c.textMid, P3: c.textGhost };
-                          const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
+                          const pColors = { P0: c.red, P1: c.textMid, P2: c.textMid, P3: c.textGhost };
+                          const pBg = { P0: c.redDim, P1: c.surfaceAlt, P2: c.surfaceAlt, P3: c.surfaceAlt };
                           return <Tag color={pColors[pri]} bg={pBg[pri]} style={{ fontSize: 10, padding: "2px 7px" }}>{pri}</Tag>;
                         })()}
                       </td>
@@ -1831,9 +1810,10 @@ export default function ProjectsView({
                             </span>
                           ) : <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
                         ) : (() => {
-                          // For shipped/alpha/beta, the timeline ends at the release milestone date.
+                          // Only fully-shipped projects end at the release milestone date.
+                          // Everything else (incl. Alpha/Beta in progress) keeps the project end date.
                           const milestone = getReleaseMilestone(proj);
-                          const milestoneEnd = milestone?.date ? milestone.date.slice(0, 10) : null;
+                          const milestoneEnd = (isShipped && milestone?.date) ? milestone.date.slice(0, 10) : null;
                           const displayEnd = milestoneEnd || proj.endDate;
                           const endHighlight = !!milestoneEnd;
                           const allocated = daysBetween(proj.startDate, displayEnd);
@@ -1871,21 +1851,24 @@ export default function ProjectsView({
                           padding: `0 ${space[3]}px`, borderBottom: cellBorder,
                           textAlign: "center", width: 32,
                         }}>
+                          {/* Bookmark shows only for followed projects, and only when My Lens is off */}
+                          {!myLens && followedProjects.includes(proj.id) && (
                           <button
                             type="button"
-                            title={followedProjects.includes(proj.id) ? "Unfollow project" : "Follow project"}
+                            title="Unfollow project"
                             onClick={(e) => { e.stopPropagation(); toggleFollowProject(proj.id); }}
                             style={{
                               background: "none", border: "none", padding: 2, cursor: "pointer",
                               display: "flex", alignItems: "center", justifyContent: "center",
-                              opacity: followedProjects.includes(proj.id) ? 1 : isHovered ? 0.35 : 0,
+                              opacity: 1,
                               transition: `opacity ${motion.fast.duration} ${motion.fast.easing}`,
                             }}
                           >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill={followedProjects.includes(proj.id) ? c.accent : "none"} stroke={followedProjects.includes(proj.id) ? c.accent : c.textDim} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill={c.accent} stroke={c.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
                             </svg>
                           </button>
+                          )}
                         </td>
                       )}
                     </tr>
@@ -2068,7 +2051,12 @@ export default function ProjectsView({
    ══════════════════════════════════════════════════════════════════ */
 function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, onCreated, personProfile, isAdmin = false }) {
   useDevLabel('CreateProjectOverlay', 'src/views/ProjectsView.jsx', 'Modal overlay form for creating new projects with all field inputs');
+  const initToday = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
   const [name, setName] = useState("");
+  const [projectType, setProjectType] = useState("New Feature");
   const [description, setDescription] = useState("");
   const [owner, setOwner] = useState(personProfile?.name || "");
   const [squad, setSquad] = useState(personProfile?.squad || "");
@@ -2076,12 +2064,11 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   const [complexity, setComplexity] = useState("");
   const [startNow, setStartNow] = useState(false);
   const [selectedTracks, setSelectedTracks] = useState(["PRD"]);
-  const [tentativeStart, setTentativeStart] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [dependencies, setDependencies] = useState([]);
-  const [depSearch, setDepSearch] = useState("");
-  const [depOpen, setDepOpen] = useState(false);
+  const [startDate, setStartDate] = useState(initToday);
+  const [endDate, setEndDate] = useState(initToday);
   const [saving, setSaving] = useState(false);
+
+  const PROJECT_TYPES = ["New Feature", "Bug Fix", "Enhancement", "Tech"];
 
   const allSquads = squads && squads.length
     ? [...squads].sort()
@@ -2094,12 +2081,6 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
     return `X${String(max + 1).padStart(2, "0")}`;
   }, [projects]);
 
-  const todayStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }, []);
-
-  const startDate = startNow ? todayStr : tentativeStart;
   const canSave = name.trim() && owner && squad;
 
   const handleCreate = () => {
@@ -2107,24 +2088,25 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
     setSaving(true);
     const tempId = previewId;
     const now = new Date().toISOString();
+    const startedISO = startDate ? new Date(startDate + "T00:00:00").toISOString() : now;
     const tracks = {};
     if (startNow && selectedTracks.length > 0) {
       for (const t of selectedTracks) {
-        tracks[t] = { periods: [{ started_at: now, completed_at: null }], owner: null };
+        tracks[t] = { periods: [{ started_at: startedISO, completed_at: null }], owner: null };
       }
     }
     const primaryPhase = startNow && selectedTracks.length > 0 ? selectedTracks[selectedTracks.length - 1] : null;
     const newProj = {
-      id: tempId, name: name.trim(), description: description.trim() || null,
+      id: tempId, name: name.trim(), type: projectType || null, description: description.trim() || null,
       owner, squad, phase: primaryPhase, startDate: startNow ? (startDate || null) : null, endDate: endDate || null,
       status: startNow ? "in_flight" : "upcoming",
       tracks,
-      tentativeStartDate: startNow ? null : (tentativeStart || null),
+      tentativeStartDate: startNow ? null : (startDate || null),
       priority, complexity: complexity || null,
       isBlocked: false, blockedReason: null, blockedAt: null,
       lastActivityAt: now, createdAt: now,
       phaseDurationOverrides: null,
-      dependencies: dependencies.length > 0 ? dependencies : null,
+      dependencies: null,
     };
     setProjects(prev => [...prev, newProj]);
     onClose();
@@ -2183,28 +2165,6 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
     { value: "L", label: "High", color: c.red },
   ];
 
-  const depCandidates = useMemo(() => {
-    const filtered = projects.filter(p =>
-      p.id !== previewId &&
-      !dependencies.includes(p.id) &&
-      (depSearch === "" || p.name.toLowerCase().includes(depSearch.toLowerCase()) || p.id.toLowerCase().includes(depSearch.toLowerCase()))
-    );
-    // Squad projects first, then the rest
-    const mySquad = squad || personProfile?.squad;
-    if (!mySquad) return filtered;
-    const inSquad = filtered.filter(p => p.squad === mySquad);
-    const rest = filtered.filter(p => p.squad !== mySquad);
-    return [...inSquad, ...rest];
-  }, [projects, previewId, dependencies, depSearch, squad, personProfile]);
-
-  const depRef = useRef(null);
-  useEffect(() => {
-    if (!depOpen) return;
-    const handler = (e) => { if (depRef.current && !depRef.current.contains(e.target)) setDepOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [depOpen]);
-
   return (
     <Modal open onClose={onClose} blur={8} width={540} title="New project">
       <div data-suppress-shortcuts style={{ width: "100%" }}>
@@ -2221,13 +2181,21 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
-          {/* Name */}
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={fieldLabel}>Name</div>
-              <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: name.length > 100 ? c.red : c.textDim, fontVariantNumeric: "tabular-nums" }}>{name.length}/100</span>
+          {/* Name + Type */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 160px", gap: space[3], alignItems: "start" }}>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <div style={fieldLabel}>Name</div>
+                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: name.length > 100 ? c.red : c.textDim, fontVariantNumeric: "tabular-nums" }}>{name.length}/100</span>
+              </div>
+              <Inp value={name} onChange={e => { if (e.target.value.length <= 100) setName(e.target.value); }} placeholder="e.g. Checkout Redesign" style={{ width: "100%" }} autoFocus maxLength={100} />
             </div>
-            <Inp value={name} onChange={e => { if (e.target.value.length <= 100) setName(e.target.value); }} placeholder="e.g. Checkout Redesign" style={{ width: "100%" }} autoFocus maxLength={100} />
+            <div>
+              <div style={fieldLabel}>Type</div>
+              <Sel value={projectType} onChange={e => setProjectType(e.target.value)} style={{ width: "100%" }}>
+                {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </Sel>
+            </div>
           </div>
 
           {/* Description — optional */}
@@ -2296,10 +2264,10 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
               <div style={{ ...fieldLabel, marginBottom: 0 }}>Timeline</div>
               <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
                 <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: startNow ? c.text : c.textDim, fontWeight: 500 }}>
-                  Start immediately
+                  Project Started
                 </span>
                 <button
-                  onClick={() => { setStartNow(v => { setTentativeStart(v ? "" : todayStr); return !v; }); }}
+                  onClick={() => setStartNow(v => !v)}
                   style={{
                     width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
                     background: startNow ? c.accent : c.border,
@@ -2319,15 +2287,35 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
               </div>
             </div>
 
-            {/* Track pills — revealed when starting immediately (multiselect) */}
+            {/* Dates row — autofilled to today, editable (past allowed) */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3], marginTop: space[2] }}>
+              <div>
+                <div style={fieldLabel}>Start date</div>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={e => setStartDate(e.target.value)}
+                  style={{ ...inputStyle }}
+                />
+              </div>
+              <div>
+                <div style={fieldLabel}>End date <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
+                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} style={{ ...inputStyle }} />
+              </div>
+            </div>
+            {startDate && endDate && endDate < startDate && (
+              <div style={{ fontFamily: typo.bodySm.font, fontSize: 13, color: c.red, marginTop: space[1] }}>End date must be on or after start date</div>
+            )}
+
+            {/* Track pills — revealed when Project Started is on (multiselect) */}
             <div style={{
               overflow: "hidden",
-              maxHeight: startNow ? 70 : 0,
+              maxHeight: startNow ? 90 : 0,
               opacity: startNow ? 1 : 0,
-              marginTop: startNow ? space[2] : 0,
+              marginTop: startNow ? space[3] : 0,
               transition: `max-height ${motion.normal.duration} ${motion.normal.easing}, opacity ${motion.fast.duration} ${motion.fast.easing}, margin-top ${motion.normal.duration} ${motion.normal.easing}`,
             }}>
-              <div style={fieldLabel}>Starting Tracks <span style={{ fontWeight: 400, color: c.textDim }}>— select one or more</span></div>
+              <div style={fieldLabel}>Tracks in progress or to be started <span style={{ fontWeight: 400, color: c.textDim }}>— select one or more</span></div>
               <div style={{ display: "flex", gap: space[2], flexWrap: "wrap" }}>
                 {trackNames.map(t => {
                   const isSelected = selectedTracks.includes(t);
@@ -2347,118 +2335,6 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
                 })}
               </div>
             </div>
-
-            {/* Dates row — always side by side */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3], marginTop: space[2] }}>
-              <div>
-                <div style={fieldLabel}>Tentative start date <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
-                <input
-                  type="date"
-                  value={startNow ? todayStr : tentativeStart}
-                  onChange={e => { if (!startNow) setTentativeStart(e.target.value); }}
-                  readOnly={startNow}
-                  style={{ ...inputStyle, ...(startNow ? { background: c.surfaceAlt, color: c.textDim, cursor: "default" } : {}) }}
-                />
-              </div>
-              <div>
-                <div style={fieldLabel}>Tentative end date <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
-                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate || undefined} style={{ ...inputStyle }} />
-              </div>
-            </div>
-            {startDate && endDate && endDate <= startDate && (
-              <div style={{ fontFamily: typo.bodySm.font, fontSize: 13, color: c.red, marginTop: space[1] }}>End date must be after start date</div>
-            )}
-          </div>
-
-          {/* Project Dependencies */}
-          <div ref={depRef} style={{ position: "relative" }}>
-            <div style={fieldLabel}>Dependencies <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
-            <div
-              onClick={() => setDepOpen(true)}
-              style={{
-                ...inputStyle,
-                height: "auto", minHeight: 40,
-                display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4,
-                padding: `4px ${space[2]}px`,
-                cursor: "text",
-              }}
-            >
-              {dependencies.map(depId => {
-                const dp = projects.find(p => p.id === depId);
-                return (
-                  <span key={depId} style={{
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: "2px 8px", borderRadius: layout.radiusXs,
-                    background: c.surfaceAlt, border: `1px solid ${c.border}`,
-                    fontFamily: typo.bodySm.font, fontSize: 12, color: c.text, lineHeight: 1,
-                  }}>
-                    <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.amber, fontWeight: 700 }}>{depId}</span>
-                    {dp?.name && <span style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{dp.name}</span>}
-                    <button onClick={(e) => { e.stopPropagation(); setDependencies(prev => prev.filter(id => id !== depId)); }} style={{
-                      background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1,
-                      color: c.textDim, fontSize: 14, fontWeight: 400,
-                    }}>&times;</button>
-                  </span>
-                );
-              })}
-              <input
-                value={depSearch}
-                onChange={e => { setDepSearch(e.target.value); setDepOpen(true); }}
-                onFocus={() => setDepOpen(true)}
-                placeholder={dependencies.length === 0 ? "Search projects..." : ""}
-                style={{
-                  border: "none", outline: "none", background: "transparent",
-                  fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, color: c.text,
-                  flex: 1, minWidth: 80, height: 30, padding: 0,
-                }}
-              />
-            </div>
-            {depOpen && depCandidates.length > 0 && (
-              <div style={{
-                position: "absolute", top: "100%", left: 0, right: 0,
-                marginTop: 4, maxHeight: 180, overflowY: "auto",
-                background: c.surfaceSolid, border: `1px solid ${c.border}`,
-                borderRadius: layout.radiusSm, boxShadow: c.shadowFloat,
-                zIndex: 20,
-              }}>
-                {(() => {
-                  const mySquad = squad || personProfile?.squad;
-                  const items = depCandidates.slice(0, 25);
-                  let shownSeparator = false;
-                  return items.map((p, idx) => {
-                    const isSquad = mySquad && p.squad === mySquad;
-                    const prevIsSquad = idx > 0 && mySquad && items[idx - 1].squad === mySquad;
-                    const needSep = mySquad && !isSquad && !shownSeparator && idx > 0 && prevIsSquad;
-                    if (needSep) shownSeparator = true;
-                    return (
-                      <React.Fragment key={p.id}>
-                        {needSep && (
-                          <div style={{ padding: `${space[1]}px ${space[3]}px`, display: "flex", alignItems: "center", gap: space[2] }}>
-                            <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim, letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" }}>All projects</span>
-                            <span style={{ flex: 1, height: 1, background: c.border }} />
-                          </div>
-                        )}
-                        <div
-                          onClick={() => { setDependencies(prev => [...prev, p.id]); setDepSearch(""); }}
-                          style={{
-                            padding: `${space[2]}px ${space[3]}px`,
-                            display: "flex", alignItems: "center", gap: space[2],
-                            cursor: "pointer",
-                            transition: `background ${motion.instant.duration} ${motion.instant.easing}`,
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.background = c.surfaceAlt; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-                        >
-                          <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.amber }}>{p.id}</span>
-                          <span style={{ fontFamily: typo.bodySm.font, fontSize: 13, color: c.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                          <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim }}>{p.squad}</span>
-                        </div>
-                      </React.Fragment>
-                    );
-                  });
-                })()}
-              </div>
-            )}
           </div>
 
           {/* Actions */}
@@ -2499,7 +2375,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [editActualEnd, setEditActualEnd] = useState(proj.actualEndDate || "");
   const [editPriority, setEditPriority] = useState(proj.priority || "P2");
   const [editComplexity, setEditComplexity] = useState(proj.complexity || "");
-  const [editPhaseOverrides, setEditPhaseOverrides] = useState(proj.phaseDurationOverrides || {});
   const setEditing = useCallback((val) => {
     if (val) {
       setEditName(proj.name);
@@ -2518,7 +2393,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   // Resume flow (unblock / move-to-active): pick which tracks to resume
   const [resumeModal, setResumeModal] = useState(null); // { kind: "blocked"|"deprioritized" } | null
   const [resumeTracks, setResumeTracks] = useState([]);
-  const [showOverrides, setShowOverrides] = useState(false);
   const [stagePickerOpen, setStagePickerOpen] = useState(false);
   const [startNowModal, setStartNowModal] = useState(false);
   const [startNowTracks, setStartNowTracks] = useState(["PRD"]);
@@ -2659,6 +2533,40 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
   const projRole = getProjectRole(personProfile?.id, proj, memberIds, isAdmin);
 
+  // Re-clone the project's tracks into fresh references so React re-renders
+  // after a mutation has updated periods in place (dev-seed mutates the live object).
+  const reflectTrackChange = () => {
+    setProjects(prev => prev.map(p => {
+      if (p.id !== proj.id) return p;
+      const tracks = {};
+      for (const k in (p.tracks || {})) tracks[k] = { ...p.tracks[k], periods: [...(p.tracks[k].periods || [])] };
+      return { ...p, tracks };
+    }));
+  };
+
+  // Activate (start/reopen) or deactivate (complete) a track via the card toggle.
+  const toggleTrack = (trackName) => {
+    if (!can.manageTracks(projRole)) return;
+    const status = getTrackStatus(proj, trackName);
+    if (status === "active") {
+      // Deactivate → close the open period
+      completeTrackInDB(proj.id, trackName, projects);
+      reflectTrackChange();
+      window.__flowToast?.(`${trackName} deactivated`);
+    } else {
+      // Activate → Alpha/Beta route through the release-note modal
+      if (trackName === "Alpha" || trackName === "Beta") {
+        setShipNote(proj.shipNote || "");
+        setShipPct(proj.shipPct != null ? String(proj.shipPct) : "");
+        setShipPhaseModal({ phase: trackName, from: proj.phase, isTrackStart: true });
+        return;
+      }
+      startTrackInDB(proj.id, trackName, projects);
+      reflectTrackChange();
+      window.__flowToast?.(`${trackName} activated`);
+    }
+  };
+
   useEffect(() => {
     const target = sessionStorage.getItem("flow_scroll_to");
     if (target === "feedback" && feedbackSectionRef.current) {
@@ -2796,7 +2704,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       actualStartDate: shipPhases.includes(editPhase) ? (editActualStart || null) : null,
       actualEndDate: shipPhases.includes(editPhase) ? (editActualEnd || null) : null,
       priority: editPriority, complexity: editComplexity || null,
-      phaseDurationOverrides: Object.keys(editPhaseOverrides).length ? editPhaseOverrides : null,
+      phaseDurationOverrides: null,
     } : p));
     exitEdit();
     setJustSaved(true);
@@ -2949,6 +2857,17 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
     : `${remaining}d`;
   const fmtShort = (d) => { if (!d) return "—"; const dt = new Date(d + "T00:00:00"); return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }); };
 
+  // State banners (shipped/blocked/depri/alpha-beta/upcoming) read as a card the
+  // hero is "extended" from: same corner radius, and the hero overlaps the banner's
+  // bottom (hero on top, so its rounded corners reveal the banner background behind).
+  const bannerExtend = {
+    // Top corners rounded (match hero); bottom square so the banner's straight
+    // sides run down behind the hero and meet its edges seamlessly.
+    borderRadius: `${layout.radiusLg}px ${layout.radiusLg}px 0 0`,
+    marginBottom: -(space[3] + layout.radiusLg),
+    paddingBottom: space[3] + layout.radiusLg,
+  };
+
   // ── Risk tier derived from metrics ──
   return (
     <div style={{
@@ -2962,9 +2881,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       {/* ═══ STATE BANNERS — upcoming / deprioritized / blocked ═══ */}
       {proj.status === "upcoming" && (
         <div style={{
-          padding: `${space[3]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+          padding: `${space[3]}px ${space[4]}px`,
           background: c.surfaceAlt, border: `1px solid ${c.border}`,
           display: "flex", alignItems: "center", gap: space[3],
+          ...bannerExtend,
         }}>
           <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: c.textDim, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
             Upcoming Project
@@ -2989,9 +2909,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       )}
       {proj.status === "deprioritized" && (
         <div style={{
-          padding: `${space[3]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+          padding: `${space[3]}px ${space[4]}px`,
           background: c.amberDim, border: `1px solid ${c.amberBorder}`,
           display: "flex", alignItems: "center", gap: space[3],
+          ...bannerExtend,
         }}>
           <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: c.amber, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
             Deprioritized
@@ -3015,9 +2936,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       )}
       {proj.isBlocked && proj.status !== "deprioritized" && (
         <div style={{
-          padding: `${space[3]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+          padding: `${space[3]}px ${space[4]}px`,
           background: c.redDim, border: `1px solid ${c.redBorder}`,
           display: "flex", alignItems: "center", gap: space[3],
+          ...bannerExtend,
         }}>
           <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, color: c.red, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>
             Blocked
@@ -3044,8 +2966,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       {proj.status === "shipped" && (
         <div style={{
           padding: `${space[5]}px ${space[6]}px`,
-          borderRadius: layout.radiusLg, background: c.greenDim,
+          background: c.greenDim,
           border: `1px solid ${c.green}25`,
+          ...bannerExtend,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: space[3], marginBottom: proj.gaReleaseNote ? space[3] : 0 }}>
             <div style={{
@@ -3103,7 +3026,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
       {/* ═══ ALPHA / BETA RELEASE NOTE — above hero card ═══ */}
       {(() => {
-        const hasAlphaOrBeta = (proj.shipNote || proj.shipPct != null) &&
+        // Show the release banner whenever an Alpha/Beta track is active — including
+        // when it was started from the board view (no ship note / rollout % captured).
+        const hasAlphaOrBeta = proj.status !== "shipped" &&
           (proj.phase === "Alpha" || proj.phase === "Beta" ||
            proj.tracks?.Alpha?.periods?.some(p => !p.completed_at) ||
            proj.tracks?.Beta?.periods?.some(p => !p.completed_at));
@@ -3114,8 +3039,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
         return (
           <div style={{
             padding: `${space[4]}px ${space[5]}px`,
-            borderRadius: layout.radiusSm, background: c.greenDim,
+            background: c.greenDim,
             border: `1px solid ${c.green}20`,
+            ...bannerExtend,
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: space[2], marginBottom: space[2] }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.green} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3164,7 +3090,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       {/* ═══ IDENTITY HEADER — project id + name + owner|squad + status + freshness ═══ */}
       <div data-tour="project-hero" style={{
         padding: `${space[5]}px ${space[6]}px`, borderRadius: layout.radiusLg,
-        background: c.surface,
+        background: c.surfaceSolid,
         border: `1px solid ${justSaved ? c.green : c.border}`,
         boxShadow: justSaved ? `${c.shadowCard || ""}, 0 0 0 3px ${c.greenDim}` : c.shadowCard,
         transition: `border-color ${motion.normal.duration} ${motion.normal.easing}, box-shadow ${motion.normal.duration} ${motion.normal.easing}`,
@@ -3184,14 +3110,15 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                   background: c.amberDim,
                 }}>{proj.id}</span>
                 {proj.priority && (() => {
-                  const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                  const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
+                  const pColors = { P0: c.red, P1: c.textMid, P2: c.textMid, P3: c.textGhost };
+                  const pBg = { P0: c.redDim, P1: c.surfaceAlt, P2: c.surfaceAlt, P3: c.surfaceAlt };
                   return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt}>{proj.priority === "P0" ? "Critical" : proj.priority}</Tag>;
                 })()}
                 {proj.complexity && (() => {
                   const cLabels = { S: "Low", M: "Med", L: "High", XL: "High" };
                   return <Tag color={c.textMid} bg={c.surfaceAlt}>{cLabels[proj.complexity] || proj.complexity}</Tag>;
                 })()}
+                {proj.type && <Tag color={c.blue} bg={c.blueDim}>{proj.type}</Tag>}
               </div>
               {(() => {
                 const stale = isStale(proj.lastActivityAt);
@@ -3209,29 +3136,72 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
               })()}
             </div>
 
-            {/* Row 2: Project Name */}
-            <div style={{
-              fontFamily: typo.displayLg.font, fontSize: typo.displayLg.size,
-              fontWeight: typo.displayLg.weight, color: c.text,
-              letterSpacing: typo.displayLg.tracking, lineHeight: 1.15,
-              marginTop: space[2],
-            }}>{proj.name}
-              {toggleFollowProject && (
-                <button
-                  type="button"
-                  data-tour="follow-project"
-                  title={followedProjects.includes(proj.id) ? "Unfollow project" : "Follow project"}
-                  onClick={() => toggleFollowProject(proj.id)}
-                  style={{
-                    background: "none", border: "none", cursor: "pointer",
-                    display: "inline-flex", alignItems: "center", verticalAlign: "middle",
-                    marginLeft: space[3], padding: 4,
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill={followedProjects.includes(proj.id) ? c.accent : "none"} stroke={followedProjects.includes(proj.id) ? c.accent : c.textGhost} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                  </svg>
-                </button>
+            {/* Row 2: Project Name + status actions */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3], marginTop: space[2] }}>
+              <div style={{
+                fontFamily: typo.displayLg.font, fontSize: typo.displayLg.size,
+                fontWeight: typo.displayLg.weight, color: c.text,
+                letterSpacing: typo.displayLg.tracking, lineHeight: 1.15,
+              }}>{proj.name}
+                {toggleFollowProject && (
+                  <button
+                    type="button"
+                    data-tour="follow-project"
+                    title={followedProjects.includes(proj.id) ? "Unfollow project" : "Follow project"}
+                    onClick={() => toggleFollowProject(proj.id)}
+                    style={{
+                      background: "none", border: "none", cursor: "pointer",
+                      display: "inline-flex", alignItems: "center", verticalAlign: "middle",
+                      marginLeft: space[3], padding: 4,
+                    }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill={followedProjects.includes(proj.id) ? c.accent : "none"} stroke={followedProjects.includes(proj.id) ? c.accent : c.textGhost} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              {/* Status actions — same row as the title */}
+              {proj.status !== "upcoming" && proj.status !== "shipped" && can.changeStatus(projRole) && (
+                <div style={{ display: "flex", alignItems: "center", gap: space[2], flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
+                  {proj.status === "in_flight" && (
+                    <button type="button" onClick={() => {
+                      setShipProjectNote("");
+                      setShipProjectFeatureType("New");
+                      setShipProjectModal(true);
+                    }} style={{
+                      padding: `4px 10px`, borderRadius: 999,
+                      background: c.greenDim, border: `1px solid ${c.green}40`,
+                      color: c.green, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+                      cursor: "pointer", transition: "background 120ms ease",
+                    }}
+                      onMouseEnter={e => { e.currentTarget.style.background = c.green; e.currentTarget.style.color = c.surface; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = c.greenDim; e.currentTarget.style.color = c.green; }}
+                    >Ship Project</button>
+                  )}
+                  {!proj.isBlocked && proj.status !== "deprioritized" && proj.status !== "shipped" && (
+                    <button type="button" onClick={() => { setBlockedReasonText(""); setBlockedReasonModal(true); }} style={{
+                      padding: `4px 10px`, borderRadius: 999,
+                      background: "transparent", border: `1px solid ${c.border}`,
+                      color: c.textDim, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+                      cursor: "pointer", transition: "border-color 120ms ease, color 120ms ease",
+                    }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = c.red; e.currentTarget.style.color = c.red; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
+                    >Mark blocked</button>
+                  )}
+                  {proj.status !== "deprioritized" && proj.status !== "shipped" && (
+                    <button type="button" onClick={() => { setDepriReasonText(""); setDepriReasonModal(true); }} style={{
+                      padding: `4px 10px`, borderRadius: 999,
+                      background: "transparent", border: `1px solid ${c.border}`,
+                      color: c.textDim, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+                      cursor: "pointer", transition: "border-color 120ms ease, color 120ms ease",
+                    }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = c.amber; e.currentTarget.style.color = c.amber; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
+                    >Deprioritize</button>
+                  )}
+                </div>
               )}
             </div>
 
@@ -3243,189 +3213,134 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
               }}>{proj.description}</div>
             )}
 
-            {/* Row 3: Owner | Squad */}
-            <div style={{ display: "flex", alignItems: "center", gap: space[2], marginTop: space[2] }}>
-              <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Owner</span>
-              <span style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, fontWeight: 600, color: proj.owner ? c.text : c.textMid, fontStyle: proj.owner ? "normal" : "italic" }}>{proj.owner || "Unassigned"}</span>
-              {proj.squad && (
-                <>
-                  <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>
-                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Squad</span>
-                  <span style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, fontWeight: 500, color: c.textMid }}>{proj.squad}</span>
-                </>
-              )}
-              {proj.createdAt && (
-                <>
-                  <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>
-                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Created</span>
-                  <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 500, color: c.textDim }}>{fmtShort(proj.createdAt.split("T")[0])}</span>
-                </>
-              )}
-              {proj.startDate && (
-                <>
-                  <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>
-                  <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 600, color: c.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Started</span>
-                  <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 500, color: c.textDim }}>{fmtShort(proj.startDate.split("T")[0])}</span>
-                </>
-              )}
-            </div>
+            {/* Row 3: Owner | Squad | Created | Started — labels match the ACTIVE TRACKS heading, values share one style */}
+            {(() => {
+              const metaLabel = { fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim };
+              const metaValue = { fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size, fontWeight: 600, color: c.text };
+              const divider = <span style={{ color: c.border, fontSize: 11, margin: `0 ${space[1]}px` }}>|</span>;
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: space[2], marginTop: space[2], flexWrap: "wrap" }}>
+                  <span style={metaLabel}>Owner</span>
+                  <span style={{ ...metaValue, ...(proj.owner ? {} : { color: c.textMid, fontStyle: "italic" }) }}>{proj.owner || "Unassigned"}</span>
+                  {proj.squad && (
+                    <>
+                      {divider}
+                      <span style={metaLabel}>Squad</span>
+                      <span style={metaValue}>{proj.squad}</span>
+                    </>
+                  )}
+                  {proj.createdAt && (
+                    <>
+                      {divider}
+                      <span style={metaLabel}>Created</span>
+                      <span style={metaValue}>{fmtShort(proj.createdAt.split("T")[0])}</span>
+                    </>
+                  )}
+                  {proj.startDate && (
+                    <>
+                      {divider}
+                      <span style={metaLabel}>Started</span>
+                      <span style={metaValue}>{fmtShort(proj.startDate.split("T")[0])}</span>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
-            {/* Row 4: Active Tracks + quick-actions — hidden for upcoming and shipped */}
-            {proj.status !== "upcoming" && proj.status !== "shipped" && <div style={{ marginTop: space[4], display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: space[3] }}>
+            {/* Row 4: Project Tracks — hidden for upcoming and shipped (actions moved to Row 1) */}
+            {proj.status !== "upcoming" && proj.status !== "shipped" && <div style={{ marginTop: space[4] }}>
               <div>
                 <span style={{
                   fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
                   letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim,
                   display: "block", marginBottom: space[1],
-                }}>Active Tracks</span>
-                <div style={{ display: "flex", alignItems: "center", gap: space[2], flexWrap: "wrap" }}>
-                  {(() => {
-                    const activeTracks = getActiveTracks(proj);
-                    const phColors = getPhaseColors();
-                    const phMids = getPhaseMids();
-                    return (
-                      <>
-                        {activeTracks.length > 0 ? activeTracks.map(t => (
-                          <span key={t} style={{
-                            display: "inline-flex", alignItems: "center", gap: 5,
-                            padding: `4px 12px`, borderRadius: 999,
-                            background: phMids[t] || c.surfaceAlt, color: phColors[t] || c.textMid,
-                            fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
-                            letterSpacing: "0.06em", textTransform: "uppercase",
-                            border: `1px solid ${(phColors[t] || c.textMid) + "30"}`,
-                          }}>
-                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: phColors[t] || c.textMid }} />
-                            {t}
-                            <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim, fontVariantNumeric: "tabular-nums" }}>
-                              {getTrackActiveDays(proj, t)}d
-                            </span>
-                          </span>
-                        )) : proj.status !== "shipped" ? (
-                          <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim, fontStyle: "italic" }}>No active tracks</span>
-                        ) : null}
-                        {/* + Track button */}
-                        {proj.status !== "shipped" && can.manageTracks(projRole) && (
-                          <button id="add-track-btn" type="button" onClick={() => setStagePickerOpen(v => !v)} style={{
-                            display: "inline-flex", alignItems: "center", gap: 4,
-                            padding: `4px 10px`, borderRadius: 999,
-                            background: "transparent", border: `1px dashed ${c.border}`,
-                            color: c.textDim, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                            cursor: "pointer", transition: "border-color 120ms ease, color 120ms ease",
-                          }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = c.accent; e.currentTarget.style.color = c.accent; }}
-                            onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
-                          >+ Track</button>
-                        )}
-                      </>
-                    );
-                  })()}
-                  {stagePickerOpen && createPortal(
-                    <>
-                      <div style={{ position: "fixed", inset: 0, zIndex: 99999 }} onClick={() => setStagePickerOpen(false)} />
-                      <div style={{
-                        position: "fixed", zIndex: 100000,
-                        top: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().bottom + 4 : 0; })(),
-                        left: (() => { const btn = document.getElementById("add-track-btn"); return btn ? btn.getBoundingClientRect().left : 0; })(),
-                        background: c.surfaceSolid, border: `1px solid ${c.border}`, borderRadius: layout.radiusMd,
-                        boxShadow: c.shadowFloat, padding: space[1], minWidth: 140,
-                        display: "flex", flexDirection: "column",
-                      }}>
-                        {trackNames.map(t => {
-                          const tStatus = getTrackStatus(proj, t);
-                          const phColor = getPhaseColors()[t] || c.textMid;
-                          const isActive = tStatus === "active";
-                          return (
-                            <button key={t} type="button" onClick={() => {
-                              if (!isActive) {
-                                setStagePickerOpen(false);
-                                if (t === "Alpha" || t === "Beta") {
-                                  setShipNote(proj.shipNote || "");
-                                  setShipPct(proj.shipPct != null ? String(proj.shipPct) : "");
-                                  setShipPhaseModal({ phase: t, from: proj.phase, isTrackStart: true });
-                                  return;
-                                }
-                                startTrackInDB(proj.id, t, projects);
-                                setProjects(prev => {
-                                  const copy = prev.map(p => {
-                                    if (p.id !== proj.id) return p;
-                                    const updated = { ...p, tracks: { ...p.tracks } };
-                                    if (!updated.tracks[t]) updated.tracks[t] = { periods: [], owner: null };
-                                    updated.tracks[t] = { ...updated.tracks[t], periods: [...updated.tracks[t].periods, { started_at: new Date().toISOString(), completed_at: null }] };
-                                    updated.phase = derivePrimaryPhase(updated);
-                                    if (updated.status === "upcoming") updated.status = "in_flight";
-                                    return updated;
-                                  });
-                                  return copy;
-                                });
-                                window.__flowToast?.(`${t} track started`);
-                              }
-                              setStagePickerOpen(false);
-                            }} disabled={isActive} style={{
-                              padding: `6px 12px`, borderRadius: layout.radiusXs,
-                              background: isActive ? c.surfaceAlt : "transparent",
-                              border: "none", cursor: isActive ? "default" : "pointer", textAlign: "left",
-                              fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: isActive ? 700 : 500,
-                              color: isActive ? phColor : c.text,
-                              opacity: isActive ? 0.5 : 1,
-                              display: "flex", alignItems: "center", gap: space[2],
-                              transition: "background 80ms ease",
+                }}>Project Tracks</span>
+                {(() => {
+                  const phColors = getPhaseColors();
+                  const phMids = getPhaseMids();
+                  const phDims = getPhaseDims();
+                  const canManage = can.manageTracks(projRole);
+                  const Bulb = ({ on, color }) => (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                      stroke={on ? color : c.textGhost} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 18h6M10 21h4" />
+                      <path d="M12 3a6 6 0 0 0-4 10.5c.5.5 1 1.2 1 2.5h6c0-1.3.5-2 1-2.5A6 6 0 0 0 12 3z"
+                        fill={on ? color : "none"} fillOpacity={on ? 0.18 : 0} />
+                    </svg>
+                  );
+                  return (
+                    <div style={{ display: "flex", alignItems: "stretch", gap: space[2], flexWrap: "wrap", marginTop: space[3], marginBottom: space[3] }}>
+                      {trackNames.map(t => {
+                        const status = getTrackStatus(proj, t);
+                        const isActive = status === "active";
+                        const isCompleted = status === "completed";
+                        const neverOpened = status === "not_started";
+                        const cycles = proj.tracks?.[t]?.periods?.length || 0;
+                        const color = phColors[t] || c.textMid;
+                        const statusText = isActive
+                          ? `${getTrackActiveDays(proj, t)}d active`
+                          : isCompleted
+                            ? `Done${cycles > 1 ? ` · ${cycles} cycles` : ""}`
+                            : "Not started";
+                        const restBorder = neverOpened ? `1px dashed ${c.border}` : `1px solid ${c.border}`;
+                        return (
+                          <div key={t}
+                            role={canManage ? "button" : undefined}
+                            onClick={canManage ? () => toggleTrack(t) : undefined}
+                            title={canManage ? (isActive ? `Deactivate ${t}` : `Activate ${t}`) : undefined}
+                            style={{
+                              position: "relative",
+                              minWidth: 92,
+                              padding: `${space[2]}px ${space[3]}px`,
+                              borderRadius: layout.radiusMd,
+                              background: isActive ? (phDims[t] || c.surfaceAlt) : neverOpened ? "transparent" : c.surfaceAlt,
+                              border: isActive ? `1px solid ${color + "55"}` : restBorder,
+                              cursor: canManage ? "pointer" : "default",
+                              opacity: isActive ? 1 : neverOpened ? 0.7 : 0.62,
+                              transition: `background ${motion.fast.duration} ${motion.fast.easing}, border-color ${motion.fast.duration} ${motion.fast.easing}, opacity ${motion.fast.duration} ${motion.fast.easing}`,
+                              display: "flex", flexDirection: "column", gap: 2,
                             }}
-                              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = c.surfaceAlt; }}
-                              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-                            >
-                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: phColor, flexShrink: 0 }} />
+                            onMouseEnter={e => { if (canManage) e.currentTarget.style.borderColor = color + "99"; }}
+                            onMouseLeave={e => { if (canManage) e.currentTarget.style.borderColor = isActive ? (color + "55") : c.border; }}
+                          >
+                            {/* Lightbulb toggle — top-right edge */}
+                            <span style={{
+                              position: "absolute", top: -8, right: -8,
+                              width: 24, height: 24, borderRadius: "50%",
+                              background: c.surfaceSolid, border: isActive ? `1px solid ${color + "55"}` : restBorder,
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              boxShadow: c.shadowSm,
+                            }}>
+                              <Bulb on={isActive} color={color} />
+                            </span>
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: 5,
+                              fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
+                              letterSpacing: "0.06em", textTransform: "uppercase",
+                              color: isActive ? color : c.textMid,
+                            }}>
+                              {isCompleted ? (
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                              ) : isActive ? (
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, color, flexShrink: 0, animation: "liveDot 1.6s ease-out infinite" }} />
+                              ) : (
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: c.textGhost, flexShrink: 0 }} />
+                              )}
                               {t}
-                              {isActive && <span style={{ marginLeft: "auto", fontSize: 10, color: c.textDim }}>active</span>}
-                              {tStatus === "completed" && <span style={{ marginLeft: "auto", fontSize: 10, color: c.green }}>done</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>,
-                    document.body
-                  )}
-                </div>
+                            </span>
+                            <span style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim }}>
+                              {statusText}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
               </div>
-              {can.changeStatus(projRole) && <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                {/* Ship Project */}
-                {proj.status === "in_flight" && (
-                  <button type="button" onClick={() => {
-                    setShipProjectNote("");
-                    setShipProjectFeatureType("New");
-                    setShipProjectModal(true);
-                  }} style={{
-                    padding: `4px 10px`, borderRadius: 999,
-                    background: c.greenDim, border: `1px solid ${c.green}40`,
-                    color: c.green, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                    cursor: "pointer", transition: "background 120ms ease",
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.background = c.green; e.currentTarget.style.color = c.surface; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = c.greenDim; e.currentTarget.style.color = c.green; }}
-                  >Ship Project</button>
-                )}
-                {!proj.isBlocked && proj.status !== "deprioritized" && proj.status !== "shipped" && (
-                  <button type="button" onClick={() => { setBlockedReasonText(""); setBlockedReasonModal(true); }} style={{
-                    padding: `4px 10px`, borderRadius: 999,
-                    background: "transparent", border: `1px solid ${c.border}`,
-                    color: c.textDim, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                    cursor: "pointer", transition: "border-color 120ms ease, color 120ms ease",
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = c.red; e.currentTarget.style.color = c.red; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
-                  >Mark blocked</button>
-                )}
-                {proj.status !== "deprioritized" && proj.status !== "shipped" && (
-                  <button type="button" onClick={() => { setDepriReasonText(""); setDepriReasonModal(true); }} style={{
-                    padding: `4px 10px`, borderRadius: 999,
-                    background: "transparent", border: `1px solid ${c.border}`,
-                    color: c.textDim, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                    cursor: "pointer", transition: "border-color 120ms ease, color 120ms ease",
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = c.amber; e.currentTarget.style.color = c.amber; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
-                  >Deprioritize</button>
-                )}
-              </div>}
             </div>}
 
             {/* Completed Tracks Summary */}
@@ -3571,59 +3486,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 </div>
               </div>
             )}
-            {/* Per-project phase threshold overrides */}
-            {(() => {
-              const existingCount = Object.keys(proj.phaseDurationOverrides || {}).length;
-              const updateOverride = (phase, val) => {
-                const v = val === "" ? undefined : parseInt(val, 10);
-                setEditPhaseOverrides(prev => {
-                  const next = { ...prev };
-                  if (v === undefined || isNaN(v)) delete next[phase];
-                  else next[phase] = v;
-                  return next;
-                });
-              };
-              return (
-                <div style={{ marginTop: space[2] }}>
-                  <button className="flow-btn" onClick={() => setShowOverrides(!showOverrides)} style={{
-                    padding: `${space[1]}px ${space[2]}px`, borderRadius: layout.radiusXs,
-                    border: `1px solid ${c.border}`, background: "transparent",
-                    color: c.textMid, fontSize: 11, fontWeight: 600, cursor: "pointer",
-                    display: "flex", alignItems: "center", gap: 4,
-                  }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
-                      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                    Phase thresholds
-                    {existingCount > 0 && <span style={{ color: c.accent, fontFamily: typo.monoSm.font }}>{existingCount}</span>}
-                  </button>
-                  {showOverrides && (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: space[2], marginTop: space[2] }}>
-                      {["PRD", "Design", "Dev", "QA"].map(phase => {
-                        const complexityDefault = getPhaseThreshold(editComplexity || proj.complexity, phase);
-                        return (
-                          <div key={phase} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                            <Label style={{ fontSize: 10 }}>{phase}</Label>
-                            <input type="number" min="0" max="365"
-                              value={editPhaseOverrides[phase] ?? ""}
-                              placeholder={complexityDefault != null ? String(complexityDefault) : "—"}
-                              onChange={e => updateOverride(phase, e.target.value)}
-                              style={{
-                                width: "100%", height: 32, padding: `0 ${space[2]}px`,
-                                borderRadius: layout.radiusXs, border: `1px solid ${c.border}`,
-                                background: c.surfaceAlt, color: c.text,
-                                fontFamily: typo.monoSm.font, fontSize: 12,
-                                textAlign: "center", outline: "none", boxSizing: "border-box",
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: space[2], marginTop: space[2] }}>
               <div style={{ display: "flex", gap: space[2] }}>
                 <Btn variant="command" size="sm" onClick={saveEdits} disabled={!canSaveEdits} style={{ borderColor: canSaveEdits ? c.greenBorder : c.border, color: canSaveEdits ? c.green : c.textDim, opacity: canSaveEdits ? 1 : 0.6, cursor: canSaveEdits ? "pointer" : "not-allowed" }}>Save</Btn>
@@ -3674,7 +3536,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                   <a key={link.id} href={link.url} target="_blank" rel="noopener noreferrer"
                     style={{
                       display: "inline-flex", alignItems: "center", gap: 6,
-                      padding: `6px 12px 6px 8px`, borderRadius: 12,
+                      height: 46, boxSizing: "border-box",
+                      padding: `0 12px 0 12px`, borderRadius: 12,
                       background: c.surfaceAlt, border: `1px solid ${c.border}`,
                       textDecoration: "none", cursor: "pointer",
                       transition: "border-color 120ms ease",
@@ -3696,7 +3559,8 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 {!adding && can.addResources(projRole) && (
                   <button onClick={() => setAdding(true)} style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: `6px 12px`, borderRadius: 12,
+                    height: 46, boxSizing: "border-box",
+                    padding: `0 14px`, borderRadius: 12,
                     background: "transparent", border: `1px dashed ${c.border}`,
                     cursor: "pointer", color: c.textDim,
                     fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600,
@@ -3836,7 +3700,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
               fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
               letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim,
               display: "block", marginBottom: space[2],
-            }}>Team</span>
+            }}>Project Members</span>
             <ProjectActivity
               project={proj}
               people={people}
@@ -4074,32 +3938,9 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           }}
         />
 
-        {/* ── Track overstay + overdue alerts (below timeline) ── */}
+        {/* ── Overdue alert (below timeline) ── */}
         {(() => {
-          const projOverrides = proj.phaseDurationOverrides || {};
           const alerts = [];
-
-          if (phaseTransitions.length > 0) {
-            for (let i = 0; i < phaseTransitions.length; i++) {
-              const seg = phaseTransitions[i];
-              const nextAt = i < phaseTransitions.length - 1
-                ? phaseTransitions[i + 1].at
-                : new Date().toISOString();
-              const days = Math.round(
-                (new Date(nextAt) - new Date(seg.at)) / 86400000
-              );
-              const threshold = projOverrides[seg.phase] ?? getPhaseThreshold(proj.complexity, seg.phase);
-              if (threshold && days > threshold) {
-                const isCurrentPhase = i === phaseTransitions.length - 1;
-                alerts.push({
-                  type: "overstay",
-                  message: isCurrentPhase
-                    ? `${seg.phase} phase has gone beyond the ${threshold}-day threshold (${days}d). Needs attention!`
-                    : `${seg.phase} phase took ${days}d — more than the ${threshold}-day standard threshold.`,
-                });
-              }
-            }
-          }
 
           const inShipPhase = proj.status === "shipped";
           if (proj.endDate && !inShipPhase) {

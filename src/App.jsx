@@ -202,8 +202,10 @@ function FlowDashboard({ auth }) {
   const [extraFollows, setExtraFollows] = useState(() => {
     try { return JSON.parse(localStorage.getItem("flow_followed_projects") || "[]"); } catch { return []; }
   });
-  // Legacy cleanup — unfollowed-my is no longer used (squad projects can't be unfollowed)
-  const unfollowedMy = [];
+  // Explicit unfollows of auto-followed (squad) projects where viewer is not owner/member
+  const [unfollowedProjects, setUnfollowedProjects] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("flow_unfollowed_projects") || "[]"); } catch { return []; }
+  });
 
   // ── Welcome tutorial (first-run onboarding) ──
   const [showTutorial, setShowTutorial] = useState(() => {
@@ -246,10 +248,10 @@ function FlowDashboard({ auth }) {
   });
 
   // ── Global filters (header bar) ──
-  const [globalFilters, setGlobalFilters] = useState({ owner: [], squad: [], person: [], track: [] });
-  const [pendingFilters, setPendingFilters] = useState({ owner: [], squad: [], person: [], track: [] });
+  const [globalFilters, setGlobalFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [] });
+  const [pendingFilters, setPendingFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [] });
   const applyFilters = useCallback(() => setGlobalFilters({ ...pendingFilters }), [pendingFilters]);
-  const clearGlobalFilters = useCallback(() => { const empty = { owner: [], squad: [], person: [], track: [] }; setGlobalFilters(empty); setPendingFilters(empty); }, []);
+  const clearGlobalFilters = useCallback(() => { const empty = { owner: [], squad: [], person: [], track: [], type: [] }; setGlobalFilters(empty); setPendingFilters(empty); }, []);
   const globalFilterCount = useMemo(() => Object.values(globalFilters).filter(v => v.length > 0).length, [globalFilters]);
   const allSquads = useMemo(() => [...new Set(projects.map(p => p.squad).filter(Boolean))].sort(), [projects]);
   // Contextual options: filter Person/Owner by selected Squad
@@ -439,38 +441,70 @@ function FlowDashboard({ auth }) {
     }).map(p => p.id);
   }, [projects, viewerProfile]);
 
-  // Effective followed = my projects + extra follows
+  // Locked follows — viewer owns or is a member; these can never be unfollowed
+  const lockedProjectIds = useMemo(() => {
+    if (!viewerProfile?.id) return [];
+    return projects.filter(p => {
+      if (p.owner_id === viewerProfile.id) return true;
+      if (isDevSeedMode()) {
+        const members = devStore.listMembers(p.id) || [];
+        return members.some(m => m.person_id === viewerProfile.id);
+      }
+      return false;
+    }).map(p => p.id);
+  }, [projects, viewerProfile]);
+
+  // Effective followed = my projects + extra follows, minus explicit unfollows
+  // (locked owner/member projects always stay followed)
   const followedProjects = useMemo(() => {
     const set = new Set(myProjectIds);
     extraFollows.forEach(id => set.add(id));
+    unfollowedProjects.forEach(id => { if (!lockedProjectIds.includes(id)) set.delete(id); });
     return [...set];
-  }, [myProjectIds, extraFollows]);
+  }, [myProjectIds, extraFollows, unfollowedProjects, lockedProjectIds]);
 
   const toggleFollowProject = useCallback((projectId) => {
-    const isMy = myProjectIds.includes(projectId);
-    const isCurrentlyFollowed = isMy || extraFollows.includes(projectId);
+    // Block unfollow only when viewer owns or is a member
+    if (lockedProjectIds.includes(projectId)) {
+      window.__flowToast?.({ message: "Can’t unfollow — you own or are a member of this project", icon: "warn" });
+      return;
+    }
+    const isCurrentlyFollowed = followedProjects.includes(projectId);
     if (isCurrentlyFollowed) {
-      // Block unfollow on "my" projects (squad / owner / member)
-      if (isMy) {
-        window.__flowToast?.({ message: "Can’t unfollow — you’re a squad member on this project", icon: "warn" });
-        return;
-      }
+      // Drop any explicit follow, and record an explicit unfollow for auto-followed squad projects
       setExtraFollows(prev => {
         const next = prev.filter(id => id !== projectId);
         try { localStorage.setItem("flow_followed_projects", JSON.stringify(next)); } catch {}
         return next;
       });
+      if (myProjectIds.includes(projectId)) {
+        setUnfollowedProjects(prev => {
+          if (prev.includes(projectId)) return prev;
+          const next = [...prev, projectId];
+          try { localStorage.setItem("flow_unfollowed_projects", JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
       window.__flowToast?.("Project unfollowed");
     } else {
-      // Follow
-      setExtraFollows(prev => {
-        const next = [...prev, projectId];
-        try { localStorage.setItem("flow_followed_projects", JSON.stringify(next)); } catch {}
+      // Clear any explicit unfollow; add to extra follows if not auto-followed
+      setUnfollowedProjects(prev => {
+        if (!prev.includes(projectId)) return prev;
+        const next = prev.filter(id => id !== projectId);
+        try { localStorage.setItem("flow_unfollowed_projects", JSON.stringify(next)); } catch {}
         return next;
       });
+      if (!myProjectIds.includes(projectId)) {
+        setExtraFollows(prev => {
+          if (prev.includes(projectId)) return prev;
+          const next = [...prev, projectId];
+          try { localStorage.setItem("flow_followed_projects", JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
       window.__flowToast?.("Project followed");
     }
-  }, [myProjectIds, extraFollows]);
+  }, [lockedProjectIds, followedProjects, myProjectIds]);
 
   useKeyboard([
     { key: "1", fn: () => handleTabSwitch("summary") },

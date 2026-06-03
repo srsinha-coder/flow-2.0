@@ -351,6 +351,13 @@ tr.flow-kb-focus::after {
   50%      { opacity: 1; }
 }
 
+/* Live "breathing" dot — pulsing halo ring in the dot's own color (currentColor) */
+@keyframes liveDot {
+  0%   { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  70%  { box-shadow: 0 0 0 5px transparent; opacity: 0.85; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}
+
 /* KPI card staggered entrance with glass reveal */
 @keyframes kpiSlideIn {
   from { opacity: 0; transform: translateY(12px) scale(0.98); }
