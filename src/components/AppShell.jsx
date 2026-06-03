@@ -9,6 +9,7 @@ import { ANNOUNCEMENTS } from "../data/announcements";
 import { isDevSeedMode, devStore } from "../data/devSeed";
 import { addProjectCommentToDB } from "../lib/mutations";
 import { timeAgo, fmtAbsolute } from "../lib/time";
+import { buildNotifications } from "../lib/notifications";
 import FlowLogo from "./FlowLogo";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
@@ -642,15 +643,15 @@ export function Header({
           <TerminalIcon size={16} color={["terminal","settings","logs","rant"].includes(activeTab) ? "#84FF95" : "rgba(255,255,255,0.55)"} />
         </button>
 
-        {/* ── Notification bell (admin rant replies) ── */}
-        {currentUser?.user?.email && (
-          <div className="flow-bell-sm-hide" style={{ display: "flex", alignItems: "center" }}>
-            <NotificationBell
-              userEmail={currentUser.user.email}
-              onNavigate={(rantId) => { onTabSwitch("terminal"); }}
-            />
-          </div>
-        )}
+        {/* ── Notification bell (urgency-tiered project notifications) ── */}
+        <div className="flow-bell-sm-hide" style={{ display: "flex", alignItems: "center" }}>
+          <NotificationBell
+            projects={projects}
+            people={people}
+            currentPerson={currentPerson}
+            onNavigate={onNavigate}
+          />
+        </div>
 
         {/* ── User avatar + logout ── */}
         {(currentUser?.user || currentPerson) && (
@@ -1569,53 +1570,45 @@ function DayRhythmPill({ onNavigateToGuide }) {
 
 
 /* ════════════════════════════════════════════════════════════════════
-   NOTIFICATION BELL — admin rant replies for current user
+   NOTIFICATION BELL — urgency-tiered project notification center
+   Action Required (red) · Heads Up (amber) · FYI (gray)
    ════════════════════════════════════════════════════════════════════ */
-function NotificationBell({ userEmail, onNavigate }) {
-  const devRef = useDevLabel('NotificationBell', 'src/components/AppShell.jsx', 'Bell icon with dropdown for admin rant reply notifications');
-  const [notifications, setNotifications] = React.useState([]);
+const NOTIF_TIERS = {
+  action: { key: "action", label: "Action Required", color: c.red },
+  heads:  { key: "heads",  label: "Heads Up",        color: c.amber },
+  fyi:    { key: "fyi",    label: "FYI",             color: c.textDim },
+};
+
+function NotificationBell({ projects = [], people = [], currentPerson, onNavigate }) {
+  const devRef = useDevLabel('NotificationBell', 'src/components/AppShell.jsx', 'Urgency-tiered project notification center');
   const [open, setOpen] = React.useState(false);
+  const [tab, setTab] = React.useState("all"); // all | action | heads | fyi
   const ref = React.useRef(null);
-
-  // Read dismissed IDs from localStorage
-  const getSeenIds = () => {
-    try { return JSON.parse(localStorage.getItem("flow_notif_seen") || "[]"); } catch { return []; }
-  };
-  const markSeen = (id) => {
-    const seen = getSeenIds();
-    if (!seen.includes(id)) {
-      localStorage.setItem("flow_notif_seen", JSON.stringify([...seen, id]));
-    }
-  };
-  const markAllSeen = () => {
-    const ids = notifications.map(n => n.id);
-    localStorage.setItem("flow_notif_seen", JSON.stringify(ids));
-    setNotifications(prev => prev.map(n => ({ ...n, _seen: true })));
-  };
-
-  // Fetch rants with admin replies for this user
-  const fetchNotifs = React.useCallback(async () => {
-    if (!userEmail) return;
-    const { data } = await supabase
-      .from("rants")
-      .select("id, title, admin_note, status, updated_at")
-      .eq("user_email", userEmail)
-      .not("admin_note", "is", null)
-      .order("updated_at", { ascending: false })
-      .limit(20);
-    if (data) {
-      const seen = getSeenIds();
-      setNotifications(data.map(r => ({ ...r, _seen: seen.includes(r.id) })));
-    }
-  }, [userEmail]);
-
-  React.useEffect(() => { fetchNotifs(); }, [fetchNotifs]);
-
-  // Poll every 60s
+  const [seen, setSeen] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("flow_notif_seen") || "[]")); }
+    catch { return new Set(); }
+  });
+  // Re-derive when the dev activity log changes (live updates).
+  const [_evVer, _setEvVer] = React.useState(0);
   React.useEffect(() => {
-    const iv = setInterval(fetchNotifs, 60000);
-    return () => clearInterval(iv);
-  }, [fetchNotifs]);
+    if (!isDevSeedMode()) return;
+    return devStore.subscribe(() => _setEvVer(v => v + 1));
+  }, []);
+
+  const notifications = React.useMemo(
+    () => buildNotifications({ projects, people, viewer: currentPerson }),
+    [projects, people, currentPerson, _evVer]
+  );
+
+  const persistSeen = (next) => {
+    try { localStorage.setItem("flow_notif_seen", JSON.stringify([...next])); } catch { /* ignore */ }
+  };
+  const markSeen = React.useCallback((id) => {
+    setSeen(prev => { const next = new Set(prev); next.add(id); persistSeen(next); return next; });
+  }, []);
+  const markAllSeen = React.useCallback(() => {
+    setSeen(prev => { const next = new Set(prev); notifications.forEach(n => next.add(n.id)); persistSeen(next); return next; });
+  }, [notifications]);
 
   // Close on outside click
   React.useEffect(() => {
@@ -1625,22 +1618,19 @@ function NotificationBell({ userEmail, onNavigate }) {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const unreadCount = notifications.filter(n => !n._seen).length;
+  const isUnread = (n) => !seen.has(n.id);
+  const unreadByTier = { action: 0, heads: 0, fyi: 0 };
+  notifications.forEach(n => { if (isUnread(n)) unreadByTier[n.tier] += 1; });
+  const actionUnread = unreadByTier.action;           // bell badge = Action Required only
+  const totalUnread = unreadByTier.action + unreadByTier.heads + unreadByTier.fyi;
 
-  const timeAgo = (ts) => {
-    const d = new Date(ts);
-    const now = new Date();
-    const diffMin = Math.floor((now - d) / 60000);
-    if (diffMin < 1) return "just now";
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay}d ago`;
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const visible = notifications.filter(n => tab === "all" ? true : n.tier === tab);
+
+  const openNotif = (n) => {
+    markSeen(n.id);
+    setOpen(false);
+    if (onNavigate && n.projectId) onNavigate("projects", n.projectId);
   };
-
-  if (notifications.length === 0) return null;
 
   return (
     <div ref={(el) => { ref.current = el; if (devRef) devRef.current = el; }} style={{ position: "relative" }}>
@@ -1654,21 +1644,24 @@ function NotificationBell({ userEmail, onNavigate }) {
           position: "relative",
           transition: `background ${motion.interaction.duration} ${motion.interaction.easing}, border-color ${motion.interaction.duration} ${motion.interaction.easing}, color ${motion.interaction.duration} ${motion.interaction.easing}, box-shadow ${motion.interaction.duration} ${motion.interaction.easing}, transform ${motion.interaction.duration} ${motion.interaction.easing}, opacity ${motion.interaction.duration} ${motion.interaction.easing}`,
         }}
-        title="Notifications"
+        title={`Notifications${actionUnread > 0 ? ` — ${actionUnread} action required` : ""}`}
+        aria-label={`Notifications, ${actionUnread} action required`}
       >
         {/* Bell icon */}
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={open ? c.orange : c.textMid} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
-        {/* Unread dot */}
-        {unreadCount > 0 && (
+        {/* Action-Required count badge (red) — only Action Required, not total */}
+        {actionUnread > 0 && (
           <div style={{
-            position: "absolute", top: 4, right: 4,
-            width: 8, height: 8, borderRadius: "50%",
-            background: c.orange,
-            boxShadow: `0 0 0 2px ${c.surface}`,
-          }} />
+            position: "absolute", top: -3, right: -3, minWidth: 16, height: 16,
+            padding: "0 4px", borderRadius: 999,
+            background: c.red, color: "#fff",
+            fontFamily: mono, fontSize: 10, fontWeight: 700,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: `0 0 0 2px #1A1A1A`,
+          }}>{actionUnread > 9 ? "9+" : actionUnread}</div>
         )}
       </button>
 
@@ -1676,77 +1669,131 @@ function NotificationBell({ userEmail, onNavigate }) {
       {open && (
         <div style={{
           position: "absolute", top: "100%", right: 0, marginTop: 6,
-          width: 320, maxHeight: 400, overflow: "auto",
+          width: 380, maxHeight: 520, display: "flex", flexDirection: "column",
           background: c.surfaceSolid, border: `1px solid ${c.border}`,
           borderRadius: layout.radiusMd, boxShadow: c.shadowElevated,
           zIndex: 200,
           animation: "flow-load-fade-in 0.15s ease-out",
-          scrollbarWidth: "none",
         }}>
           {/* Header */}
           <div style={{
             padding: "10px 14px", borderBottom: `1px solid ${c.border}`,
             display: "flex", alignItems: "center", justifyContent: "space-between",
           }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: c.text }}>Notifications</span>
-            {unreadCount > 0 && (
+            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: c.text, letterSpacing: "0.04em" }}>NOTIFICATIONS</span>
+            {totalUnread > 0 && (
               <button
                 onClick={(e) => { e.stopPropagation(); markAllSeen(); }}
                 style={{
                   background: "transparent", border: "none", cursor: "pointer",
-                  fontSize: 11, color: c.orange, fontFamily: "inherit",
+                  fontSize: 11, fontWeight: 600, color: c.accent, fontFamily: "inherit",
                 }}
-              >
-                Mark all read
-              </button>
+              >Mark all as read</button>
             )}
           </div>
 
+          {/* Tabs */}
+          <div style={{ display: "flex", gap: 4, padding: "8px 10px", borderBottom: `1px solid ${c.border}` }}>
+            {[
+              { key: "all", label: "All", count: totalUnread },
+              { key: "action", label: "Action Required", count: unreadByTier.action },
+              { key: "heads", label: "Heads Up", count: unreadByTier.heads },
+              { key: "fyi", label: "FYI", count: unreadByTier.fyi },
+            ].map(t => {
+              const active = tab === t.key;
+              const accent = t.key === "action" ? c.red : t.key === "heads" ? c.amber : c.accent;
+              return (
+                <button key={t.key} onClick={() => setTab(t.key)} style={{
+                  flex: t.key === "action" ? "1 1 auto" : "0 0 auto",
+                  padding: "4px 9px", borderRadius: 999, cursor: "pointer",
+                  border: `1px solid ${active ? accent : c.border}`,
+                  background: active ? accent + "14" : "transparent",
+                  color: active ? accent : c.textMid,
+                  fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                }}>
+                  {t.label}
+                  {t.count > 0 && (
+                    <span style={{
+                      fontFamily: mono, fontSize: 10, fontWeight: 700,
+                      color: active ? accent : c.textDim,
+                    }}>{t.count}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Items */}
-          {notifications.map(n => (
-            <button
-              key={n.id}
-              onClick={() => {
-                markSeen(n.id);
-                setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, _seen: true } : x));
-                setOpen(false);
-                if (onNavigate) onNavigate(n.id);
-              }}
-              style={{
-                width: "100%", padding: "10px 14px",
-                background: n._seen ? "transparent" : c.orange + "08",
-                border: "none", borderBottom: `1px solid ${c.border}`,
-                cursor: "pointer", textAlign: "left", fontFamily: "inherit",
-                display: "flex", gap: 10, alignItems: "flex-start",
-                transition: "background 0.1s",
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = "rgba(0,0,0,0.03)"}
-              onMouseLeave={e => e.currentTarget.style.background = n._seen ? "transparent" : c.orange + "08"}
-            >
-              {/* Unread dot */}
+          <div style={{ overflowY: "auto", scrollbarWidth: "thin", flex: 1 }}>
+            {visible.length === 0 ? (
               <div style={{
-                width: 6, height: 6, borderRadius: "50%", marginTop: 5, flexShrink: 0,
-                background: n._seen ? "transparent" : c.orange,
-              }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontSize: 12, fontWeight: n._seen ? 400 : 600, color: c.text,
-                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                }}>
-                  Admin replied to "{n.title}"
-                </div>
-                <div style={{
-                  fontSize: 11, color: c.textDim, marginTop: 2,
-                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                }}>
-                  {n.admin_note}
-                </div>
-                <div style={{ fontSize: 11, color: c.textDim, opacity: 0.5, marginTop: 2 }}>
-                  {timeAgo(n.updated_at)}
-                </div>
+                padding: "40px 20px", textAlign: "center",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+              }}>
+                <span style={{ fontSize: 30 }}>🎉</span>
+                <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>You're all caught up</span>
+                <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim }}>
+                  {tab === "action" ? "Nothing needs your attention right now." : "No notifications in this view."}
+                </span>
               </div>
-            </button>
-          ))}
+            ) : visible.map(n => {
+              const unread = isUnread(n);
+              const tier = NOTIF_TIERS[n.tier];
+              const nameAtStart = n.title.indexOf(n.projectName) === 0;
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => openNotif(n)}
+                  style={{
+                    width: "100%", padding: "11px 14px",
+                    background: unread && !n.resolved ? tier.color + "0A" : "transparent",
+                    border: "none", borderBottom: `1px solid ${c.border}`,
+                    borderLeft: `3px solid ${n.resolved ? c.border : (unread ? tier.color : "transparent")}`,
+                    cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                    display: "flex", gap: 10, alignItems: "flex-start",
+                    opacity: n.resolved ? 0.62 : 1,
+                    transition: "background 0.1s",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = "rgba(0,0,0,0.03)"}
+                  onMouseLeave={e => e.currentTarget.style.background = unread && !n.resolved ? tier.color + "0A" : "transparent"}
+                >
+                  {/* Urgency dot */}
+                  <span aria-hidden="true" style={{
+                    width: 8, height: 8, borderRadius: "50%", marginTop: 5, flexShrink: 0,
+                    background: n.resolved ? c.textDim : tier.color,
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Title — project name bold */}
+                    <div style={{ fontSize: 12.5, color: c.text, fontWeight: unread ? 600 : 400, lineHeight: 1.4 }}>
+                      {nameAtStart ? (<><b style={{ fontWeight: 700 }}>{n.projectName}</b>{n.title.slice(n.projectName.length)}</>) : n.title}
+                      {n.resolved && (
+                        <span style={{
+                          marginLeft: 6, fontFamily: mono, fontSize: 9, fontWeight: 700,
+                          color: c.green, background: c.green + "18", padding: "1px 5px",
+                          borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.04em",
+                        }}>Resolved</span>
+                      )}
+                    </div>
+                    {/* Meta: days since activity · owner · timestamp */}
+                    <div style={{
+                      fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, marginTop: 3, lineHeight: 1.4,
+                    }}>
+                      {n.meta} · {timeAgo(n.ts)}
+                    </div>
+                    {/* CTA */}
+                    {n.cta && !n.resolved && (
+                      <span style={{
+                        display: "inline-block", marginTop: 5,
+                        fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 700,
+                        color: n.tier === "action" ? c.red : c.accent,
+                      }}>{n.cta} →</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
