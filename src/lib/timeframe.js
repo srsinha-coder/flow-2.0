@@ -2,7 +2,7 @@
 //
 // A timeframe = { mode, offset, label, sublabel, start, end, year } where
 // start/end are ISO YYYY-MM-DD strings (what every tab filters on).
-//   week    → Sunday → Friday window (offset in weeks; 0 = current week)
+//   week    → Monday → Sunday window (offset in weeks; 0 = current week)
 //   month   → a full calendar month (offset in months; 0 = current month)
 //   quarter → a full calendar quarter (offset in quarters; 0 = current quarter)
 //   custom  → a user-picked range (no offset / arrows)
@@ -56,19 +56,19 @@ export function timeframeForMode(mode, offset = 0, ref = new Date()) {
     };
   }
 
-  // week — Sunday → Friday. getDay(): 0=Sun … 6=Sat.
-  // The Sunday on/before today, shifted by `offset` weeks; Friday = Sunday + 5.
-  // (On Saturday this resolves to the week that just ended, per spec.)
+  // week — Monday → Sunday. getDay(): 0=Sun … 6=Sat.
+  // The Monday on/before today, shifted by `offset` weeks; Sunday = Monday + 6.
+  // (dow+6)%7 = days since Monday — Sunday(0)→6 back, Monday(1)→0, … Saturday(6)→5.
   const dow = today.getDay();
-  const sunday = new Date(today);
-  sunday.setDate(today.getDate() - dow + offset * 7);
-  const friday = new Date(sunday);
-  friday.setDate(sunday.getDate() + 5);
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - ((dow + 6) % 7) + offset * 7);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
   return {
     mode: "week", offset,
-    label: `${fmtMD(sunday)} — ${fmtMD(friday)}`,
-    sublabel: "Sun – Fri",
-    start: iso(sunday), end: iso(friday), year: sunday.getFullYear(),
+    label: `${fmtMD(monday)} — ${fmtMD(sunday)}`,
+    sublabel: "Mon – Sun",
+    start: iso(monday), end: iso(sunday), year: monday.getFullYear(),
   };
 }
 
