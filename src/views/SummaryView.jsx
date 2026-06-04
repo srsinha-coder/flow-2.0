@@ -9,7 +9,6 @@ import { KpiGrid, KpiCard, SectionHead, Pill, PillRow } from "../components/kpi"
 import { isDevSeedMode, devStore } from "../data/devSeed";
 import useDevLabel from "../hooks/useDevLabel";
 
-const PRIORITY_COLORS = { P0: c.red, P1: c.orange || c.amber, P2: c.textMid, P3: c.textDim };
 const FROZEN_DAYS = 7;
 
 function computeProjectMetrics(projects, phaseDurationDefaults) {
@@ -27,9 +26,6 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
   allPhases.forEach(ph => { byPhase[ph] = 0; });
   projects.filter(p => p.status === "in_flight" || p.status === "blocked").forEach(p => { byPhase[p.phase] = (byPhase[p.phase] || 0) + 1; });
 
-  const byPriority = { P0: 0, P1: 0, P2: 0, P3: 0 };
-  active.forEach(p => { byPriority[p.priority || "P2"]++; });
-
   const frozen = active.filter(p => {
     if (!p.lastActivityAt) return true;
     const diff = (todayMs - new Date(p.lastActivityAt).getTime()) / 86_400_000;
@@ -46,7 +42,7 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
 
   return {
     active, shipped, blocked, deprioritized, upcoming,
-    byPhase, byPriority,
+    byPhase,
     frozen, overdue,
     needsAttention,
   };
@@ -62,7 +58,6 @@ function generateWeeklyDigest(projects, allEvents) {
   const blockerEvents = recentEvents.filter(e => e.action === "project_blocked");
 
   const shipEvents = phaseChanges.filter(e => ["Alpha", "Beta", "GA"].includes(e.details?.to));
-  const p0Projects = projects.filter(p => p.priority === "P0" && (p.status === "in_flight" || p.status === "blocked"));
   const blockedProjects = projects.filter(p => p.isBlocked);
 
   const squadActivity = {};
@@ -73,12 +68,6 @@ function generateWeeklyDigest(projects, allEvents) {
   const mostActiveSquad = Object.entries(squadActivity).sort((a, b) => b[1] - a[1])[0];
 
   const lines = [];
-
-  if (p0Projects.length > 0) {
-    const p0Names = p0Projects.map(p => p.name).slice(0, 3);
-    const p0Blocked = p0Projects.filter(p => p.isBlocked);
-    lines.push(`**P0 Watch:** ${p0Projects.length} critical project${p0Projects.length > 1 ? "s" : ""} active — ${p0Names.join(", ")}${p0Projects.length > 3 ? ` +${p0Projects.length - 3} more` : ""}.${p0Blocked.length > 0 ? ` ⚠ ${p0Blocked.length} blocked.` : " All moving."}`);
-  }
 
 
   if (shipEvents.length > 0) {

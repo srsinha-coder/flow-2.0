@@ -190,7 +190,6 @@ function toSeedProjects(rows) {
       actualEndDate: r.end_date ? (() => { const d = new Date(r.end_date); d.setDate(d.getDate() + 5); return d.toISOString().split('T')[0]; })() : null,
     } : {}),
     status: r.status,
-    priority: r.priority || 'P2',
     complexity: r.complexity || null,
     isBlocked: r.is_blocked || false,
     blockedReason: r.blocked_reason || null,

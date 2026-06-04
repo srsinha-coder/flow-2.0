@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { c, typo, space, layout, trackNames, phaseColors as getPhaseColors } from "../styles/theme";
 import { getTrackStatus, getTrackActiveDays, getReleaseMilestone } from "../lib/tracks";
 
@@ -15,10 +16,34 @@ function toDay(iso) {
   return new Date(iso + (iso.length === 10 ? "T00:00:00" : "")).getTime();
 }
 
-export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReopenTrack, canManage = true }) {
+export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReopenTrack, onEditPeriod, canManage = true }) {
   const pc = useMemo(() => getPhaseColors(), []);
   const scrollRefs = useRef([]);
   const syncing = useRef(false);
+  // Editing a period's start/end dates (backdate a track that wasn't closed in time)
+  const [editPeriod, setEditPeriod] = React.useState(null);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const openEditor = (name, index, period, ev) => {
+    if (!canManage || !onEditPeriod) return;
+    setEditPeriod({
+      track: name, index,
+      start: (period.started_at || "").slice(0, 10),
+      end: period.completed_at ? period.completed_at.slice(0, 10) : "",
+      x: Math.min(ev.clientX, window.innerWidth - 260),
+      y: Math.min(ev.clientY + 10, window.innerHeight - 220),
+    });
+  };
+  const saveEditor = () => {
+    if (!editPeriod) return;
+    const { track, index, start, end } = editPeriod;
+    if (!start) return;
+    if (end && end < start) return;
+    onEditPeriod(track, index, {
+      started_at: new Date(start + "T12:00:00").toISOString(),
+      completed_at: end ? new Date(end + "T12:00:00").toISOString() : null,
+    });
+    setEditPeriod(null);
+  };
 
   const { timeStart, timeEnd, todayPos, endDatePos, shippedPos, statusLines, statusBands, resumeDate } = useMemo(() => {
     const now = Date.now();
@@ -356,17 +381,26 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                     width: 0, borderLeft: `2px ${sl.dashed ? "dashed" : "solid"} ${sl.color}`, zIndex: 2,
                   }} />
                 ))}
-                {/* Bars */}
+                {/* Bars — click to edit this period's dates (backdate) */}
                 {trackData?.periods?.map((period, pi) => {
                   const pos = barStyle(period.started_at, period.completed_at);
                   const isDone = !!period.completed_at;
+                  const editable = canManage && !!onEditPeriod;
                   return (
-                    <div key={pi} style={{
-                      position: "absolute", top: 8, height: ROW_H - 16,
-                      ...pos,
-                      background: isDone ? `${color}50` : color,
-                      borderRadius: 4, minWidth: 4, zIndex: 1,
-                    }} />
+                    <div key={pi}
+                      onClick={editable ? (e) => { e.stopPropagation(); openEditor(name, pi, period, e); } : undefined}
+                      title={editable ? `Edit ${name} dates` : undefined}
+                      style={{
+                        position: "absolute", top: 8, height: ROW_H - 16,
+                        ...pos,
+                        background: isDone ? `${color}50` : color,
+                        borderRadius: 4, minWidth: 4, zIndex: 1,
+                        cursor: editable ? "pointer" : "default",
+                        transition: "filter 120ms ease, box-shadow 120ms ease",
+                      }}
+                      onMouseEnter={editable ? (e) => { e.currentTarget.style.filter = "brightness(1.08)"; e.currentTarget.style.boxShadow = `0 0 0 2px ${color}40`; } : undefined}
+                      onMouseLeave={editable ? (e) => { e.currentTarget.style.filter = "none"; e.currentTarget.style.boxShadow = "none"; } : undefined}
+                    />
                   );
                 })}
               </div>
@@ -510,6 +544,56 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
           </div>
         );
       })()}
+
+      {/* ═══ PERIOD DATE EDITOR — backdate a track's start/end ═══ */}
+      {editPeriod && createPortal(
+        <>
+          <div onClick={() => setEditPeriod(null)} style={{ position: "fixed", inset: 0, zIndex: 9998 }} />
+          <div style={{
+            position: "fixed", left: editPeriod.x, top: editPeriod.y, zIndex: 9999, width: 240,
+            background: c.surfaceSolid, border: `1px solid ${c.border}`,
+            borderRadius: layout.radiusMd, boxShadow: c.shadowFloat, padding: space[3],
+          }}>
+            <div style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: c.textDim, marginBottom: space[2] }}>
+              Edit {editPeriod.track} dates
+            </div>
+            {[
+              { key: "start", label: "Started", min: undefined, max: editPeriod.end || todayStr },
+              { key: "end", label: "Ended", min: editPeriod.start, max: todayStr, optional: true },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom: space[2] }}>
+                <div style={{ fontFamily: typo.bodyXs.font, fontSize: 11, fontWeight: 600, color: c.textMid, marginBottom: 3 }}>
+                  {f.label}{f.optional && <span style={{ color: c.textDim, fontWeight: 400 }}> — blank if ongoing</span>}
+                </div>
+                <input type="date" value={editPeriod[f.key]} min={f.min} max={f.max}
+                  onChange={e => setEditPeriod(p => ({ ...p, [f.key]: e.target.value }))}
+                  style={{
+                    width: "100%", height: 32, padding: `0 ${space[2]}px`, boxSizing: "border-box",
+                    borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                    background: c.surfaceSolid, color: c.text, fontFamily: typo.monoSm.font, fontSize: 12,
+                  }} />
+              </div>
+            ))}
+            {editPeriod.end && editPeriod.end < editPeriod.start && (
+              <div style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.red, marginBottom: space[2] }}>End must be on or after start.</div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: space[2], marginTop: space[1] }}>
+              <button type="button" onClick={() => setEditPeriod(null)} style={{
+                height: 30, padding: `0 ${space[3]}px`, borderRadius: layout.radiusSm,
+                background: "transparent", border: `1px solid ${c.border}`, color: c.textMid,
+                fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>Cancel</button>
+              <button type="button" onClick={saveEditor} disabled={!editPeriod.start || (editPeriod.end && editPeriod.end < editPeriod.start)} style={{
+                height: 30, padding: `0 ${space[3]}px`, borderRadius: layout.radiusSm,
+                background: c.accent, border: "none", color: c.textOnAccent,
+                fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600,
+                cursor: "pointer", opacity: (!editPeriod.start || (editPeriod.end && editPeriod.end < editPeriod.start)) ? 0.5 : 1,
+              }}>Save</button>
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
     </div>
   );
 }

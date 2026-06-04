@@ -27,7 +27,7 @@ const STEPS = [
   {
     target: "[data-tour='project-row']",
     title: "View Project",
-    desc: "Tap any project row to open its full detail — shown next. Track status, priority, owner, and timeline at a glance.",
+    desc: "Tap any project row to open its full detail — shown next. Track status, owner, and timeline at a glance.",
     position: "bottom",
     context: "list",
     spotlightPadding: 4,

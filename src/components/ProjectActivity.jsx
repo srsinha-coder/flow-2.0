@@ -185,7 +185,8 @@ function MembersRow({ ownerPerson, memberPeople, canManage, canRemove = true, on
               {person?.name || "Unknown"}
             </span>
             <span style={{ fontFamily: body, fontSize: 11, fontWeight: 500, color: c.textDim, whiteSpace: "nowrap", lineHeight: 1.2 }}>
-              {isOwner ? "Owner" : person?.role || person?.designation || "Member"}
+              {(isOwner ? "Owner" : person?.role || person?.designation || "Member")}
+              {person?.squad ? ` · ${person.squad}` : ""}
             </span>
           </div>
         </button>

@@ -8,6 +8,10 @@ const FEATURE_TYPE_COLORS = {
   Fix: { color: c.red, bg: "#DC2626" + "18" },
   Enhancement: { color: c.blue, bg: "#1D4ED8" + "18" },
   "UI/UX": { color: c.purple, bg: "#6D28D9" + "18" },
+  // Project-creation types (now the source of a shipped project's feature type)
+  "New Feature": { color: c.green, bg: "#059669" + "18" },
+  "Bug Fix": { color: c.red, bg: "#DC2626" + "18" },
+  "Tech": { color: c.amber, bg: "#B45309" + "18" },
 };
 
 function formatMonth(dateStr) {
@@ -32,11 +36,15 @@ export default function WhatsNewView({ projects, people, onNavigate }) {
     [projects]
   );
 
+  // Release date = GA date (legacy) or shipped date (Ship Project flow).
+  const relDate = (p) => p.gaEnteredAt || p.shippedAt || "";
+
   const gaProjects = useMemo(() => {
     return projects
-      .filter(p => p.phase === "GA" && p.gaEnteredAt)
+      // Shipped to GA (legacy) or via Ship Project, but only when announced.
+      .filter(p => ((p.phase === "GA" && p.gaEnteredAt) || (p.status === "shipped" && (p.shippedAt || p.gaEnteredAt))) && p.announce !== false)
       .filter(p => !squadFilter || p.squad === squadFilter)
-      .sort((a, b) => (b.gaEnteredAt || "").localeCompare(a.gaEnteredAt || ""));
+      .sort((a, b) => relDate(b).localeCompare(relDate(a)));
   }, [projects, squadFilter]);
 
   const groupedByMonth = useMemo(() => {
@@ -44,10 +52,11 @@ export default function WhatsNewView({ projects, people, onNavigate }) {
     let currentMonth = null;
     let currentGroup = null;
     for (const p of gaProjects) {
-      const mk = monthKey(p.gaEnteredAt);
+      const d = relDate(p);
+      const mk = monthKey(d);
       if (mk !== currentMonth) {
         currentMonth = mk;
-        currentGroup = { month: mk, label: formatMonth(p.gaEnteredAt), items: [] };
+        currentGroup = { month: mk, label: formatMonth(d), items: [] };
         groups.push(currentGroup);
       }
       currentGroup.items.push(p);
@@ -121,7 +130,7 @@ export default function WhatsNewView({ projects, people, onNavigate }) {
                     fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
                     color: c.textDim, minWidth: 56, paddingTop: 2,
                     fontVariantNumeric: "tabular-nums",
-                  }}>{formatDate(proj.gaEnteredAt)}</div>
+                  }}>{formatDate(relDate(proj))}</div>
 
                   {/* Center: content */}
                   <div style={{ flex: 1, minWidth: 0 }}>

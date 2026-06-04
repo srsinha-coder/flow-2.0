@@ -138,7 +138,6 @@ export async function createProjectInDB(project) {
     status: project.status || 'active',
     start_date: project.startDate || null,
     end_date: project.endDate || null,
-    priority: project.priority || 'P2',
     complexity: project.complexity || null,
   }).select('id').single();
   if (error) { logError('createProject', error); return null; }
@@ -177,7 +176,6 @@ export async function updateProjectInDB(projectId, changes) {
   if (changes.endDate !== undefined) updates.end_date = changes.endDate || null;
   if (changes.actualStartDate !== undefined) updates.actual_start_date = changes.actualStartDate || null;
   if (changes.actualEndDate !== undefined) updates.actual_end_date = changes.actualEndDate || null;
-  if (changes.priority !== undefined) updates.priority = changes.priority;
   if (changes.complexity !== undefined) updates.complexity = changes.complexity || null;
   if (changes.isBlocked !== undefined) {
     updates.is_blocked = changes.isBlocked;
@@ -193,6 +191,7 @@ export async function updateProjectInDB(projectId, changes) {
     updates.blocked_reason = changes.blockedReason;
   }
   if (changes.phaseDurationOverrides !== undefined) updates.phase_duration_overrides = changes.phaseDurationOverrides;
+  if (changes.tracks !== undefined) { updates.tracks = changes.tracks; if (changes.phase !== undefined) updates.phase = changes.phase; }
   if (changes.owner !== undefined) {
     const { data: ownerRow } = changes.owner
       ? await supabase.from('people').select('id').eq('name', changes.owner).single()

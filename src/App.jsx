@@ -248,10 +248,10 @@ function FlowDashboard({ auth }) {
   });
 
   // ── Global filters (header bar) ──
-  const [globalFilters, setGlobalFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [] });
-  const [pendingFilters, setPendingFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [] });
+  const [globalFilters, setGlobalFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [], tags: [] });
+  const [pendingFilters, setPendingFilters] = useState({ owner: [], squad: [], person: [], track: [], type: [], tags: [] });
   const applyFilters = useCallback(() => setGlobalFilters({ ...pendingFilters }), [pendingFilters]);
-  const clearGlobalFilters = useCallback(() => { const empty = { owner: [], squad: [], person: [], track: [], type: [] }; setGlobalFilters(empty); setPendingFilters(empty); }, []);
+  const clearGlobalFilters = useCallback(() => { const empty = { owner: [], squad: [], person: [], track: [], type: [], tags: [] }; setGlobalFilters(empty); setPendingFilters(empty); }, []);
   const globalFilterCount = useMemo(() => Object.values(globalFilters).filter(v => v.length > 0).length, [globalFilters]);
   const allSquads = useMemo(() => [...new Set(projects.map(p => p.squad).filter(Boolean))].sort(), [projects]);
   // Contextual options: filter Person/Owner by selected Squad
@@ -425,13 +425,10 @@ function FlowDashboard({ auth }) {
   }, []);
 
   // ── My Lens: compute "my projects" ──
-  // All squad projects + any cross-squad project where viewer is owner or member
+  // Only projects where the viewer is the owner or a team member.
   const myProjectIds = useMemo(() => {
-    if (!viewerProfile?.id || !viewerProfile?.squad) return [];
+    if (!viewerProfile?.id) return [];
     return projects.filter(p => {
-      // All projects in my squad are "mine"
-      if (p.squad === viewerProfile.squad) return true;
-      // Cross-squad: only if I own or am a member
       if (p.owner_id === viewerProfile.id) return true;
       if (isDevSeedMode()) {
         const members = devStore.listMembers(p.id) || [];

@@ -719,6 +719,9 @@ export function Header({
             {globalFilters.type?.length > 0 && (
               <FilterChip label={`Type: ${globalFilters.type.join(", ")}`} onClick={() => removeAppliedFilter("type")} />
             )}
+            {globalFilters.tags?.length > 0 && (
+              <FilterChip label={`Tags: ${globalFilters.tags.join(", ")}`} onClick={() => removeAppliedFilter("tags")} />
+            )}
           </div>
         )}
 
@@ -796,6 +799,7 @@ export function Header({
       allOwners={allOwners || []}
       allSquads={allSquads || []}
       allPeople={allPeople || []}
+      allTags={[...new Set((projects || []).flatMap(p => p.tags || []))].sort()}
     />
     </>
   );
@@ -982,7 +986,7 @@ function FilterDrawer({
   draft, setDraft,
   onApply, onClearAll,
   draftCount, draftChanged, globalFilterCount,
-  allOwners, allSquads, allPeople,
+  allOwners, allSquads, allPeople, allTags = [],
 }) {
   const devRef = useDevLabel('FilterDrawer', 'src/components/AppShell.jsx', 'Full-height right panel with search-per-group filter controls');
   const drawerRef = React.useRef(null);
@@ -1002,9 +1006,10 @@ function FilterDrawer({
     { key: "owner",  label: "Owner",  options: allOwners },
     { key: "track",  label: "Track",  options: allTracks },
     { key: "type",   label: "Type",   options: allTypes },
+    ...(allTags.length ? [{ key: "tags", label: "Tags", options: allTags }] : []),
   ];
 
-  const activeCount = [draft.squad, draft.owner, draft.track, draft.type].filter(v => v?.length > 0).length;
+  const activeCount = [draft.squad, draft.owner, draft.track, draft.type, draft.tags].filter(v => v?.length > 0).length;
 
   return (
     <>
@@ -2474,6 +2479,8 @@ function AnnouncementsBell({ projects = [], people = [], currentPerson, onNaviga
   const shippedProjects = React.useMemo(() => {
     return projects
       .filter(p => p.status === "shipped")
+      // Only ships flagged for announcement (legacy ships without the flag still show).
+      .filter(p => p.announce !== false)
       .filter(p => !squadFilter || p.squad === squadFilter)
       .map(p => {
         // Normalize date — shippedAt could be ISO datetime or date-only
@@ -2504,10 +2511,14 @@ function AnnouncementsBell({ projects = [], people = [], currentPerson, onNaviga
 
   const featureTypeColor = (type) => {
     const m = {
-      New:         { color: c.green,  bg: "#059669" + "18" },
-      Fix:         { color: c.red,    bg: "#DC2626" + "18" },
-      Enhancement: { color: c.blue,   bg: "#1D4ED8" + "18" },
-      "UI/UX":     { color: c.purple, bg: "#6D28D9" + "18" },
+      New:           { color: c.green,  bg: "#059669" + "18" },
+      Fix:           { color: c.red,    bg: "#DC2626" + "18" },
+      Enhancement:   { color: c.blue,   bg: "#1D4ED8" + "18" },
+      "UI/UX":       { color: c.purple, bg: "#6D28D9" + "18" },
+      // Project-creation types (now the source of a shipped project's feature type)
+      "New Feature": { color: c.green,  bg: "#059669" + "18" },
+      "Bug Fix":     { color: c.red,    bg: "#DC2626" + "18" },
+      "Tech":        { color: c.amber,  bg: "#B45309" + "18" },
     };
     return m[type] || m.New;
   };
