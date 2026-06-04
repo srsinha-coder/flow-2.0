@@ -315,7 +315,7 @@ const GuideView = ({ onNavigate }) => {
           <div style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, color: c.text }}>Creating a Project</div>
           <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
             <Step num="1">Click the <B>+ Add Project</B> button. Your squad and name are pre-filled as defaults.</Step>
-            <Step num="2">Give it a name and add an optional ship date.</Step>
+            <Step num="2">Give it a name, set complexity, and add an optional ship date.</Step>
             <Step num="3">Toggle <B color={c.accent}>Start Now</B> to select which tracks to begin immediately. Pick multiple tracks to run them in parallel from day one.</Step>
             <Step num="4">Projects without Start Now are saved as <B>Upcoming</B> and can be started later.</Step>
           </div>

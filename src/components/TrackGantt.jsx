@@ -389,12 +389,16 @@ export default function TrackGantt({ proj, onStartTrack, onCompleteTrack, onReop
                   return (
                     <div key={pi}
                       onClick={editable ? (e) => { e.stopPropagation(); openEditor(name, pi, period, e); } : undefined}
-                      title={editable ? `Edit ${name} dates` : undefined}
+                      title={editable ? `Edit ${name} dates` : (period.backdated ? "Backdated entry — logged after the fact" : undefined)}
                       style={{
                         position: "absolute", top: 8, height: ROW_H - 16,
                         ...pos,
                         background: isDone ? `${color}50` : color,
                         borderRadius: 4, minWidth: 4, zIndex: 1,
+                        // Backdated periods get a dashed outline so they read as
+                        // retroactively logged rather than tracked in real time.
+                        border: period.backdated ? `1.5px dashed ${c.amber}` : undefined,
+                        boxSizing: "border-box",
                         cursor: editable ? "pointer" : "default",
                         transition: "filter 120ms ease, box-shadow 120ms ease",
                       }}

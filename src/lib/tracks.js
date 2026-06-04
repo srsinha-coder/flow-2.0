@@ -2,6 +2,80 @@ import { trackNames } from '../styles/theme';
 
 const DAY_MS = 86_400_000;
 
+// ── Project stage classification — single source of truth ──
+//   IN FLIGHT = PRD, Design, Dev, QA       (pre-release build stages)
+//   SHIPPED   = Alpha, Beta, GA            (a project counts as shipped once
+//                                           it reaches any release stage)
+// A project is "shipped" the moment it enters Alpha — Alpha/Beta/GA are all
+// release stages. The explicit Ship Project action additionally sets
+// status "shipped" (see hasShipMarker), which surfaces the 🚀 ship marker.
+export const IN_FLIGHT_STAGES = ["PRD", "Design", "Dev", "QA"];
+export const SHIPPED_STAGES = ["Alpha", "Beta", "GA"];
+
+// Full stage order (GA is a status, not a track, so it sits at the end).
+const STAGE_ORDER = ["PRD", "Design", "Dev", "QA", "Alpha", "Beta", "GA"];
+
+// The furthest stage a project has reached — from its tracks, with GA derived
+// from the shipped status. Returns a stage name or null.
+export function furthestStageOf(proj) {
+  if (!proj) return null;
+  if (proj.status === "shipped") return "GA";
+  let best = null, bestIdx = -1;
+  if (proj.tracks) {
+    for (const name of Object.keys(proj.tracks)) {
+      const t = proj.tracks[name];
+      if (!t?.periods?.length) continue;
+      const idx = STAGE_ORDER.indexOf(name);
+      if (idx > bestIdx) { bestIdx = idx; best = name; }
+    }
+  }
+  return best || proj.phase || null;
+}
+
+// A project is "shipped" once its furthest reached stage is a release stage
+// (Alpha/Beta/GA), or it was explicitly shipped. Deprioritized / upcoming /
+// blocked projects keep their own bucket and are never reclassified.
+export function isShipped(proj) {
+  if (!proj) return false;
+  if (proj.status === "shipped") return true;
+  if (proj.status !== "in_flight") return false;
+  return SHIPPED_STAGES.includes(furthestStageOf(proj));
+}
+
+// A project is "in flight" while it is active and still in a build stage
+// (PRD/Design/Dev/QA) — i.e. an active project that has not yet shipped.
+export function isInFlight(proj) {
+  if (!proj) return false;
+  if (proj.status !== "in_flight") return false;
+  return !SHIPPED_STAGES.includes(furthestStageOf(proj));
+}
+
+// The 🚀 ship marker: set when someone explicitly runs the Ship Project action
+// (which sets status "shipped"). Distinct from the stage-based isShipped().
+export function hasShipMarker(proj) {
+  return proj?.status === "shipped";
+}
+
+// The date a project entered its furthest release stage ("shipped date"),
+// as YYYY-MM-DD: GA → GA date; Beta → Beta entry; Alpha → Alpha entry.
+export function shippedDateOf(proj) {
+  if (!proj) return null;
+  const stage = furthestStageOf(proj);
+  if (proj.status === "shipped" || stage === "GA") return gaDateOf(proj);
+  if (stage === "Beta" || stage === "Alpha") {
+    const first = proj.tracks?.[stage]?.periods?.[0]?.started_at;
+    return first ? String(first).slice(0, 10) : null;
+  }
+  return null;
+}
+
+// The date a project transitioned to GA (its "went live" date), as YYYY-MM-DD.
+export function gaDateOf(proj) {
+  if (!proj) return null;
+  const raw = proj.gaEnteredAt || proj.shippedAt || proj.shipped_at || null;
+  return raw ? String(raw).slice(0, 10) : null;
+}
+
 export function getActiveTracks(proj) {
   if (!proj.tracks) return [];
   return trackNames.filter(name => {
@@ -125,6 +199,31 @@ export function startTrack(proj, trackName) {
   });
   proj.phase = derivePrimaryPhase(proj);
   return proj;
+}
+
+// Immutably apply a phase transition / track start to a tracks object:
+// closes the `from` track's open period at `at`, and opens a `to` period at `at`.
+// `from` may be null (pure "start a track"). `endAt` optionally closes the new
+// `to` period (e.g. logging a track that already ran start→finish in the past).
+// `backdated` tags the opened period so the UI can mark retroactively-logged
+// entries; pass false for a normal "start today" so it reads as real-time.
+export function applyBackdatedTransition(tracks, from, to, at, endAt = null, backdated = true) {
+  const next = { ...(tracks || {}) };
+  if (from && next[from]?.periods?.length) {
+    const periods = [...next[from].periods];
+    const last = periods[periods.length - 1];
+    if (last && last.completed_at === null) {
+      periods[periods.length - 1] = { ...last, completed_at: at };
+    }
+    next[from] = { ...next[from], periods };
+  }
+  if (to) {
+    const existing = next[to] || { periods: [], owner: null };
+    const period = { started_at: at, completed_at: endAt || null };
+    if (backdated) period.backdated = true;
+    next[to] = { ...existing, periods: [...existing.periods, period] };
+  }
+  return next;
 }
 
 export function completeTrack(proj, trackName) {

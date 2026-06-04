@@ -1764,7 +1764,7 @@ export const devStore = {
   },
 
   // ── EVENTS (activity_log) ────────────────────────────────────
-  logEvent({ projectId, action, userName, userEmail, details }) {
+  logEvent({ projectId, action, userName, userEmail, details, createdAt }) {
     const row = {
       id: `ev-${Math.random().toString(36).slice(2, 9)}`,
       entity_type: "project", entity_id: projectId,
@@ -1772,7 +1772,9 @@ export const devStore = {
       user_name: userName || "AJ",
       user_email: userEmail || "ajain@noon.com",
       details: details || null,
-      created_at: new Date().toISOString(),
+      // createdAt lets callers backdate an entry (e.g. logging a missed
+      // PRD → Dev transition on its true past date); defaults to now.
+      created_at: createdAt || new Date().toISOString(),
     };
     _state.events.unshift(row);
     _persistState();

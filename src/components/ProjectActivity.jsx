@@ -863,6 +863,19 @@ export default function ProjectActivity({
                         lineHeight: 1.4, fontWeight: isGreenEvent ? 600 : 400,
                       }}>
                         <span>{actionLabel(item.data, peopleByLowerName)}</span>
+                        {item.data.details?.backdated && (
+                          <span
+                            title={`Backdated entry — logged after the fact for ${fmtAbsolute(item.data.created_at)}${item.data.details?.reason ? ` · ${item.data.details.reason}` : ""}`}
+                            style={{
+                              fontFamily: mono, fontSize: 9, fontWeight: 700,
+                              letterSpacing: "0.06em", textTransform: "uppercase",
+                              color: c.amber, background: c.amberDim,
+                              border: `1px solid ${c.amber}30`,
+                              padding: "1px 5px", borderRadius: layout.radiusXs,
+                              lineHeight: 1.4, whiteSpace: "nowrap",
+                            }}
+                          >⤺ Backdated</span>
+                        )}
                         <span title={fmtAbsolute(item.data.created_at)} style={{ fontSize: 11, color: c.textGhost || c.textDim, fontWeight: 400 }}>· {timeAgo(item.data.created_at)}</span>
                       </div>
                     </>
