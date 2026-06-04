@@ -541,3 +541,69 @@ html, body { overflow-x: clip; max-width: 100%; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Notification center: In the Loop bento grid (3 / 2 / 1 responsive) ── */
+.nc-bento {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1024px) {
+  .nc-bento { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .nc-bento { grid-template-columns: 1fr; }
+}
+
+/* ── Notification center: What's New timeline ── */
+/* Subtle vertical connector line running through a dot at each date. */
+.nc-timeline { position: relative; }
+.nc-timeline::before {
+  content: "";
+  position: absolute;
+  left: 79px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: #D8D8DE;
+  border-radius: 2px;
+}
+.nc-timeline-row {
+  position: relative;
+  display: flex;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+.nc-timeline-date {
+  flex: 0 0 56px;
+}
+.nc-timeline-dot {
+  position: absolute;
+  left: 75px;
+  top: 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #E8590C;
+  border: 2px solid #EDEDF0;
+  box-shadow: 0 0 0 1px #D8D8DE;
+  z-index: 1;
+}
+.nc-timeline-items {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 40px;
+}
+.nc-launch-tile { max-width: 78%; }
+
+@media (max-width: 1024px) {
+  .nc-launch-tile { max-width: 100%; }
+}
+@media (max-width: 640px) {
+  .nc-timeline::before { left: 5px; }
+  .nc-timeline-dot { left: 1px; top: 4px; }
+  .nc-timeline-row { flex-direction: column; gap: 6px; padding-left: 24px; margin-bottom: 24px; }
+  .nc-timeline-date { flex: none; }
+  .nc-timeline-items { padding-left: 0; }
+}

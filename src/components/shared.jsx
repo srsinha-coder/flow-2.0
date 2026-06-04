@@ -190,7 +190,7 @@ const SURFACE_BG = {
   overlay: () => c.surfaceOverlay,
 };
 
-export const Surface = ({ children, style: s, accent, className = "", compact = false, variant = "panel", id }) => {
+export const Surface = ({ children, style: s, accent, className = "", compact = false, variant = "panel", id, ...rest }) => {
   const devRef = useDevLabel('Container panel with variant backgrounds and optional accent border');
   const bgFn = SURFACE_BG[variant] || SURFACE_BG.panel;
   // Steel & Orange: every card on the page canvas gets shadowCard so it
@@ -200,7 +200,7 @@ export const Surface = ({ children, style: s, accent, className = "", compact = 
     variant === "hero"    ? (c.shadowCard    || c.shadowHero) :
                             (c.shadowCard    || "none");
   return (
-    <div ref={devRef} id={id} className={`flow-card ${className}`} style={{
+    <div ref={devRef} id={id} className={`flow-card ${className}`} {...rest} style={{
       background: bgFn(),
       border: `1px solid ${c.border}`,
       borderLeft: accent ? `3px solid ${accent}` : `1px solid ${c.border}`,

@@ -8,7 +8,7 @@ import { FilterChip, Btn, Modal, selChevron } from "./shared";
 import { ANNOUNCEMENTS } from "../data/announcements";
 import { isDevSeedMode, devStore } from "../data/devSeed";
 import { timeAgo } from "../lib/time";
-import { buildNotifications } from "../lib/notifications";
+import useUnreadCount from "../hooks/useUnreadCount";
 import { allTagsWithCounts } from "../lib/tags";
 import { timeframeForMode, customTimeframe, presetSummary, todayISO, canGoForward, DEFAULT_TIMEFRAME_MODE } from "../lib/timeframe";
 import FlowLogo from "./FlowLogo";
@@ -330,8 +330,8 @@ export function Header({
   alertCount = 0,
   // ── Inbox modal data ──
   projects, people, currentPerson, onNavigate,
-  // ── My Lens ──
-  myLens = false, toggleMyLens, followedProjects = [],
+  // ── Following (drives the notification "In the Loop" feed) ──
+  followedProjects = [],
   // ── Timeframe ──
   timeframe, setTimeframe,
 }) {
@@ -594,54 +594,14 @@ export function Header({
 
       {/* ── Utility cluster: lens · search · user ── */}
       <div style={{ display: "flex", alignItems: "center", gap: space[2], flexShrink: 0 }}>
-        {/* ── My Lens toggle switch (disabled on People & Guide tabs) ── */}
-        {toggleMyLens && (() => {
-          const lensDisabled = activeTab === "people" || activeTab === "guide";
-          return (
-          <div
-            data-tour="my-lens"
-            onClick={lensDisabled ? undefined : toggleMyLens}
-            style={{
-              display: "flex", alignItems: "center", gap: 8,
-              cursor: lensDisabled ? "default" : "pointer",
-              padding: "0 4px", userSelect: "none",
-              opacity: lensDisabled ? 0.3 : 1,
-              transition: `opacity ${motion.fast.duration} ${motion.fast.easing}`,
-            }}
-            title={lensDisabled ? "My Lens is not available on this tab" : myLens ? "My Lens ON — showing your squad + followed projects" : "My Lens — filter to your squad + followed projects"}
-          >
-            <span style={{
-              fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
-              color: myLens ? "#FFFFFF" : "rgba(255,255,255,0.45)",
-              letterSpacing: "0.06em", textTransform: "uppercase",
-            }}>My Lens</span>
-            <div style={{
-              width: 36, height: 20, borderRadius: 10,
-              background: myLens ? "#FFFFFF" : "rgba(255,255,255,0.2)",
-              position: "relative",
-              transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
-              flexShrink: 0,
-            }}>
-              <div style={{
-                width: 16, height: 16, borderRadius: "50%",
-                background: myLens ? "#111111" : "rgba(255,255,255,0.5)",
-                position: "absolute", top: 2,
-                left: myLens ? 18 : 2,
-                transition: `left ${motion.fast.duration} ${motion.fast.easing}, background ${motion.fast.duration}`,
-                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-              }} />
-            </div>
-          </div>
-          );
-        })()}
-
         <CompactSearch onClick={onCmdOpen} />
 
-        {/* ── Notification center (Mentions · Project Updates · Needs Attention · Updates) ── */}
-        <NotificationCenter
+        {/* ── Notification bell → full-page center (What's New · In the Loop) ── */}
+        <NotificationBell
           projects={projects}
           people={people}
           currentPerson={currentPerson}
+          followedProjects={followedProjects}
           onNavigate={onNavigate}
         />
 
@@ -1596,286 +1556,51 @@ function DayRhythmPill({ onNavigateToGuide }) {
 }
 
 
+
+
 /* ════════════════════════════════════════════════════════════════════
-   NOTIFICATION BELL — urgency-tiered project notification center
-   Action Required (red) · Heads Up (amber) · FYI (gray)
+   NOTIFICATION BELL — header entry point to the full-page center
+   Shows an unread badge (critical items + mentions); click → /notifications
    ════════════════════════════════════════════════════════════════════ */
+function NotificationBell({ projects = [], people = [], currentPerson, followedProjects = [], onNavigate }) {
+  const devRef = useDevLabel('NotificationBell', 'src/components/AppShell.jsx', 'Header bell — unread badge; opens the full-page notification center.');
 
-function NotificationCenter({ projects = [], people = [], currentPerson, onNavigate }) {
-  const devRef = useDevLabel('NotificationCenter', 'src/components/AppShell.jsx', 'Unified center: Mentions · Project Updates · Needs Attention · Updates');
-  const [open, setOpen] = React.useState(false);
-  const [tab, setTab] = React.useState("attention"); // mentions | updates | attention | whatsnew
-  const ref = React.useRef(null);
-
-  // Live re-derive when the dev activity log changes.
-  const [_evVer, _setEvVer] = React.useState(0);
-  React.useEffect(() => {
-    if (!isDevSeedMode()) return;
-    return devStore.subscribe(() => _setEvVer(v => v + 1));
-  }, []);
-
-  // ── Read state (notifications + mentions + announcements) ──
-  const [notifSeen, setNotifSeen] = React.useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("flow_notif_seen") || "[]")); } catch { return new Set(); }
-  });
-  const [mentionRead, setMentionRead] = React.useState(() => {
-    try { return new Set(JSON.parse(sessionStorage.getItem("flow_inbox_read") || "[]")); } catch { return new Set(); }
-  });
-  const [annSeen, setAnnSeen] = React.useState(() => {
-    try { return localStorage.getItem(LAST_SEEN_KEY) || ""; } catch { return ""; }
-  });
-  const persistNotif = (s) => { try { localStorage.setItem("flow_notif_seen", JSON.stringify([...s])); } catch { /* ignore */ } };
-  const persistMention = (s) => { try { sessionStorage.setItem("flow_inbox_read", JSON.stringify([...s])); } catch { /* ignore */ } };
-
-  const projectsById = React.useMemo(() => new Map((projects || []).map(p => [p.id, p])), [projects]);
-  const peopleById = React.useMemo(() => new Map((people || []).map(p => [p.id, p])), [people]);
-
-  // ── Data sources ──
-  const notifications = React.useMemo(
-    () => buildNotifications({ projects, people, viewer: currentPerson }),
-    [projects, people, currentPerson, _evVer]
-  );
-  const attention = React.useMemo(() => notifications.filter(n => n.tier === "action"), [notifications]);
-  const projectUpdates = React.useMemo(() => notifications.filter(n => n.tier !== "action"), [notifications]);
-
-  const viewerName = currentPerson?.name;
-  const mentions = React.useMemo(() => {
-    if (!viewerName || !isDevSeedMode()) return [];
-    const vn = viewerName.toLowerCase();
-    const fn = viewerName.split(/\s+/)[0]?.toLowerCase();
-    const all = (projects || []).flatMap(proj => (devStore.listComments(proj.id) || []).map(cmt => ({ ...cmt, _projectId: proj.id })));
-    return all
-      .filter(cmt => !cmt.deleted_at && cmt.author_id !== currentPerson?.id && extractMentionsFromBody(cmt.body).some(n => n === vn || n === fn))
-      .map(cmt => ({ comment: cmt, project: projectsById.get(cmt._projectId), author: peopleById.get(cmt.author_id) }))
-      .sort((a, b) => new Date(b.comment.created_at) - new Date(a.comment.created_at));
-  }, [projects, viewerName, currentPerson?.id, projectsById, peopleById, _evVer]);
-
-  const announcements = React.useMemo(() => [...ANNOUNCEMENTS].sort((a, b) => (a.date < b.date ? 1 : -1)), []);
-  const newestAnn = announcements[0]?.date || "";
-
-  // ── Unread counts ──
-  const mentionsUnread = mentions.filter(m => !mentionRead.has(m.comment.id)).length;
-  const attentionUnread = attention.filter(n => !notifSeen.has(n.id)).length;
-  const updatesUnread = projectUpdates.filter(n => !notifSeen.has(n.id)).length;
-  const annUnread = newestAnn && newestAnn > (annSeen || "") ? 1 : 0;
-  const badge = attentionUnread + mentionsUnread; // bell badge = high-signal only
-
-  // ── Close on outside click ──
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  // Stamp announcements as seen while viewing the Updates tab.
-  React.useEffect(() => {
-    if (!open || tab !== "whatsnew" || !annUnread) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const stamp = newestAnn && newestAnn > today ? newestAnn : today;
-    try { localStorage.setItem(LAST_SEEN_KEY, stamp); } catch { /* ignore */ }
-    setAnnSeen(stamp);
-  }, [open, tab, annUnread, newestAnn]);
-
-  const markNotif = (id) => setNotifSeen(prev => { const n = new Set(prev); n.add(id); persistNotif(n); return n; });
-  const markMention = (id) => setMentionRead(prev => { const n = new Set(prev); n.add(id); persistMention(n); return n; });
-  const goProject = (projectId) => { if (onNavigate && projectId) { onNavigate("projects", projectId); setOpen(false); } };
-
-  const markAllInTab = () => {
-    if (tab === "mentions") setMentionRead(prev => { const n = new Set(prev); mentions.forEach(m => n.add(m.comment.id)); persistMention(n); return n; });
-    else if (tab === "updates") setNotifSeen(prev => { const n = new Set(prev); projectUpdates.forEach(x => n.add(x.id)); persistNotif(n); return n; });
-    else if (tab === "attention") setNotifSeen(prev => { const n = new Set(prev); attention.forEach(x => n.add(x.id)); persistNotif(n); return n; });
-  };
-
-  const TABS = [
-    { key: "mentions", label: "Mentions", count: mentionsUnread, color: c.cyan },
-    { key: "updates", label: "Project Updates", count: updatesUnread, color: c.amber },
-    { key: "attention", label: "Needs Attention", count: attentionUnread, color: c.red },
-    { key: "whatsnew", label: "Updates", count: annUnread, color: c.accent },
-  ];
-
-  // ── Bento card primitives ──
-  const cardStyle = (accent, big) => ({
-    gridColumn: big ? "1 / -1" : "auto",
-    display: "flex", flexDirection: "column", gap: 5,
-    padding: "12px 13px", borderRadius: layout.radiusMd,
-    background: c.surfaceAlt, border: `1px solid ${c.border}`,
-    borderLeft: `3px solid ${accent}`,
-    textAlign: "left", width: "100%", fontFamily: "inherit",
-    transition: "background 0.12s, border-color 0.12s",
-  });
-  const dot = (color) => ({ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 });
-  const hoverIn = (e) => { e.currentTarget.style.background = c.surface; e.currentTarget.style.borderColor = c.textGhost || c.border; };
-  const hoverOut = (e) => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.borderColor = c.border; };
-
-  const annStyle = (tag) => {
-    const m = {
-      new: { label: "New", color: c.green },
-      fix: { label: "Fix", color: c.red },
-      update: { label: "Update", color: c.blue },
-      soon: { label: "Soon", color: c.purple },
-    };
-    return m[tag] || { label: "Update", color: c.accent };
-  };
-  const fmtAnnDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
-  const mentionCard = (m, big) => {
-    const unread = !mentionRead.has(m.comment.id);
-    const body = (m.comment.body || "").replace(/\s+/g, " ").trim();
-    const snippet = body.slice(0, big ? 220 : 110);
-    return (
-      <button key={m.comment.id} type="button" onClick={() => { markMention(m.comment.id); goProject(m.comment._projectId); }}
-        style={{ ...cardStyle(c.cyan, big), cursor: "pointer" }} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 700, color: c.text }}>{m.author?.name || "Someone"}</span>
-          {unread && <span style={dot(c.cyan)} />}
-        </div>
-        <div style={{ fontSize: 12, color: c.textMid, lineHeight: 1.4 }}>mentioned you in <b style={{ color: c.text }}>{m.project?.name || "a project"}</b></div>
-        <div style={{ fontSize: 12, color: c.textDim, lineHeight: 1.45, fontStyle: "italic" }}>“{snippet}{body.length > snippet.length ? "…" : ""}”</div>
-        <div style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim }}>{timeAgo(m.comment.created_at)}</div>
-      </button>
-    );
-  };
-
-  const notifCard = (n, big, accent) => {
-    const unread = !notifSeen.has(n.id);
-    return (
-      <button key={n.id} type="button" onClick={() => { markNotif(n.id); goProject(n.projectId); }}
-        style={{ ...cardStyle(n.resolved ? c.border : accent, big), cursor: "pointer", opacity: n.resolved ? 0.65 : 1 }}
-        onMouseEnter={hoverIn} onMouseLeave={hoverOut}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ fontSize: 12.5, fontWeight: unread ? 700 : 500, color: c.text, lineHeight: 1.4 }}>{n.title}</span>
-          {unread && !n.resolved && <span style={{ ...dot(accent), marginTop: 5 }} />}
-        </div>
-        {n.reason && <div style={{ fontSize: 11.5, color: c.textMid, lineHeight: 1.4 }}>Reason: {n.reason}</div>}
-        <div style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, lineHeight: 1.4 }}>{n.meta} · {timeAgo(n.ts)}</div>
-        {n.resolved
-          ? <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: c.green, background: c.green + "18", padding: "1px 5px", borderRadius: 4, alignSelf: "flex-start", textTransform: "uppercase", letterSpacing: "0.04em" }}>Resolved</span>
-          : n.cta && <span style={{ fontSize: 11, fontWeight: 700, color: accent }}>{n.cta} →</span>}
-      </button>
-    );
-  };
-
-  const annCard = (a, big) => {
-    const s = annStyle(a.tag);
-    return (
-      <div key={a.id} style={{ ...cardStyle(s.color, big), cursor: "default" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: s.color, background: s.color + "18", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</span>
-          <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim }}>{fmtAnnDate(a.date)}</span>
-        </div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: c.text, lineHeight: 1.35 }}>{a.title}</div>
-        <div style={{ fontSize: 12, color: c.textMid, lineHeight: 1.5 }}>{a.body}</div>
-      </div>
-    );
-  };
-
-  let items;
-  if (tab === "mentions") items = mentions.map((m, i) => mentionCard(m, i === 0));
-  else if (tab === "updates") items = projectUpdates.map((n, i) => notifCard(n, i === 0, c.amber));
-  else if (tab === "attention") items = attention.map((n, i) => notifCard(n, i === 0, c.red));
-  else items = announcements.map((a, i) => annCard(a, i === 0));
-
-  const emptyCopy = {
-    mentions: "No one has mentioned you yet.",
-    updates: "No recent project updates.",
-    attention: "Nothing needs your attention right now.",
-    whatsnew: "No product updates yet.",
-  };
+  // useUnreadCount handles live re-derivation (activity log) + seen-state events.
+  const { total: badge } = useUnreadCount({ projects, people, viewer: currentPerson, followedProjects });
 
   return (
-    <div ref={(el) => { ref.current = el; if (devRef) devRef.current = el; }} style={{ position: "relative" }}>
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        style={{
-          width: 34, height: 34, borderRadius: layout.radiusSm,
-          border: `1px solid ${open ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)"}`,
-          background: open ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
-          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-          position: "relative",
-          transition: `background ${motion.interaction.duration} ${motion.interaction.easing}, border-color ${motion.interaction.duration} ${motion.interaction.easing}`,
-        }}
-        title={`Notifications${badge > 0 ? ` — ${badge} need${badge === 1 ? "s" : ""} you` : ""}`}
-        aria-label={`Notifications, ${badge} unread`}
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={open ? c.orange : c.textMid} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-        </svg>
-        {badge > 0 && (
-          <div style={{
-            position: "absolute", top: -3, right: -3, minWidth: 16, height: 16,
-            padding: "0 4px", borderRadius: 999,
-            background: attentionUnread > 0 ? c.red : c.cyan, color: "#fff",
-            fontFamily: mono, fontSize: 10, fontWeight: 700,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: `0 0 0 2px #1A1A1A`,
-          }}>{badge > 9 ? "9+" : badge}</div>
-        )}
-      </button>
-
-      {open && (
+    <button
+      ref={devRef}
+      type="button"
+      onClick={() => onNavigate && onNavigate('notifications')}
+      style={{
+        width: 34, height: 34, borderRadius: layout.radiusSm,
+        border: `1px solid rgba(255,255,255,0.15)`,
+        background: "rgba(255,255,255,0.08)",
+        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+        position: "relative",
+        transition: `background ${motion.interaction.duration} ${motion.interaction.easing}, border-color ${motion.interaction.duration} ${motion.interaction.easing}`,
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.15)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+      title={`Notifications${badge > 0 ? ` — ${badge} need${badge === 1 ? "s" : ""} you` : ""}`}
+      aria-label={`Notifications, ${badge} unread`}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c.textMid} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      </svg>
+      {badge > 0 && (
         <div style={{
-          position: "absolute", top: "100%", right: 0, marginTop: 8,
-          width: "min(720px, calc(100vw - 32px))",
-          maxHeight: "min(640px, calc(100vh - 110px))",
-          display: "flex", flexDirection: "column",
-          background: c.surfaceSolid, border: `1px solid ${c.border}`,
-          borderRadius: layout.radiusLg, boxShadow: c.shadowElevated,
-          zIndex: 200, overflow: "hidden",
-          animation: "flow-load-fade-in 0.15s ease-out",
-        }}>
-          {/* Header */}
-          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: c.text, letterSpacing: "0.05em" }}>NOTIFICATIONS</span>
-            {tab !== "whatsnew" && (
-              <button type="button" onClick={(e) => { e.stopPropagation(); markAllInTab(); }} style={{
-                background: "transparent", border: "none", cursor: "pointer",
-                fontSize: 11, fontWeight: 600, color: c.accent, fontFamily: "inherit",
-              }}>Mark all as read</button>
-            )}
-          </div>
-
-          {/* Tabs */}
-          <div style={{ display: "flex", gap: 6, padding: "10px 14px", borderBottom: `1px solid ${c.border}`, flexWrap: "wrap" }}>
-            {TABS.map(t => {
-              const active = tab === t.key;
-              return (
-                <button key={t.key} type="button" onClick={() => setTab(t.key)} style={{
-                  padding: "5px 11px", borderRadius: 999, cursor: "pointer",
-                  border: `1px solid ${active ? t.color : c.border}`,
-                  background: active ? t.color + "14" : "transparent",
-                  color: active ? t.color : c.textMid,
-                  fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
-                  display: "inline-flex", alignItems: "center", gap: 5,
-                }}>
-                  {t.label}
-                  {t.count > 0 && (
-                    <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, color: active ? t.color : c.textDim }}>{t.count}</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Bento content */}
-          <div style={{ overflowY: "auto", flex: 1, padding: space[3] }}>
-            {items.length === 0 ? (
-              <div style={{ padding: "48px 20px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 30 }}>{tab === "attention" ? "🎉" : "✨"}</span>
-                <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>You're all caught up</span>
-                <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim }}>{emptyCopy[tab]}</span>
-              </div>
-            ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[2], alignContent: "start" }}>
-                {items}
-              </div>
-            )}
-          </div>
-        </div>
+          position: "absolute", top: -3, right: -3, minWidth: 16, height: 16,
+          padding: "0 4px", borderRadius: 999,
+          background: c.red, color: "#fff",
+          fontFamily: mono, fontSize: 10, fontWeight: 700,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: `0 0 0 2px #1A1A1A`,
+        }}>{badge > 9 ? "9+" : badge}</div>
       )}
-    </div>
+    </button>
   );
 }
 

@@ -22,6 +22,7 @@ import PeopleDeepDive from "./views/PeopleDeepDive";
 import SettingsView from "./views/SettingsView";
 import GuideView from "./views/GuideView";
 import LogsView from "./views/LogsView";
+import NotificationCenter from "./components/notifications/NotificationCenter";
 import TerminalView from "./views/TerminalView";
 import FlowLogo from "./components/FlowLogo";
 import SyncToast from "./components/SyncToast";
@@ -133,7 +134,8 @@ function FlowDashboard({ auth }) {
     try {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab");
-      const validTabs = NAV.filter(n => !n.separator).map(n => n.key);
+      // NAV tabs + routable-but-hidden tabs (no nav chip, but deeplinkable).
+      const validTabs = [...NAV.filter(n => !n.separator).map(n => n.key), "notifications"];
       if (tab && validTabs.includes(tab)) return tab;
     } catch { /* ignore */ }
     return "summary";
@@ -195,10 +197,6 @@ function FlowDashboard({ auth }) {
   const searchRef = useRef(null);
   const [showHints, setShowHints] = useState(false);
 
-  // ── My Lens (personal filter: my squad + followed projects) ──
-  const [myLens, setMyLens] = useState(() => {
-    try { return localStorage.getItem("flow_my_lens") === "true"; } catch { return false; }
-  });
   // Explicit cross-squad follows
   const [extraFollows, setExtraFollows] = useState(() => {
     try { return JSON.parse(localStorage.getItem("flow_followed_projects") || "[]"); } catch { return []; }
@@ -212,31 +210,6 @@ function FlowDashboard({ auth }) {
   const [showTutorial, setShowTutorial] = useState(() => {
     try { return !localStorage.getItem("flow_tutorial_seen"); } catch { return false; }
   });
-
-  // ── Toggle sound (Web Audio API — subtle click) ──
-  const playToggleSound = useCallback((isOn) => {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      osc.frequency.value = isOn ? 740 : 580;
-      gain.gain.setValueAtTime(0.03, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.08);
-      setTimeout(() => ctx.close(), 150);
-    } catch {}
-  }, []);
-
-  const toggleMyLens = useCallback(() => setMyLens(v => {
-    const next = !v;
-    try { localStorage.setItem("flow_my_lens", String(next)); } catch {}
-    playToggleSound(next);
-    return next;
-  }), [playToggleSound]);
 
   // ── Timeframe (quarter / custom range) ──
   // Global Time Period filter — defaults to Week, restored from the session if set.
@@ -368,14 +341,13 @@ function FlowDashboard({ auth }) {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }, [flushDirtyToDB]);
 
-  // Apply a single-tag filter and jump to the full projects list (My Lens off
+  // Apply a single-tag filter and jump to the full projects list (clears
   // so every project carrying that tag is shown).
   const applyTagFilter = useCallback((tag) => {
     if (!tag) return;
     const next = { owner: [], squad: [], person: [], track: [], type: [], tags: [tag] };
     setGlobalFilters(next);
     setPendingFilters(next);
-    setMyLens(false);
     setDetailLabel(null);
     goBackRef.current = null;
     handleNavigate("projects", null);
@@ -452,7 +424,7 @@ function FlowDashboard({ auth }) {
     savePermConfig(cfg);
   }, []);
 
-  // ── My Lens: compute "my projects" ──
+  // ── "My projects" — drives auto-follow + In the Loop scoping ──
   // Only projects where the viewer is the owner or a team member.
   const myProjectIds = useMemo(() => {
     if (!viewerProfile?.id) return [];
@@ -676,8 +648,6 @@ function FlowDashboard({ auth }) {
         people={people}
         currentPerson={viewerProfile}
         onNavigate={handleNavigate}
-        myLens={myLens}
-        toggleMyLens={toggleMyLens}
         followedProjects={followedProjects}
         timeframe={timeframe}
         setTimeframe={setTimeframe}
@@ -691,10 +661,10 @@ function FlowDashboard({ auth }) {
       {activeTab !== "terminal" && (
       <main key={activeTab} className="flow-page" style={{ maxWidth: 1440, margin: "0 auto", padding: `${space[7] - 4}px ${space[7]}px ${space[8] + 20}px` }}>
         <ErrorCatcher key={activeTab}>
-          {activeTab === "summary" && <SummaryView loading={loading} error={error} projects={projects} people={people} squads={squads} globalFilters={globalFilters} onNavigate={handleNavigate} phaseDurationDefaults={phaseDurationDefaults} myLens={myLens} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} timeframe={timeframe} />}
-          {activeTab === "projects" && <ProjectsView key={navPayload || `proj-${projResetKey}`} projects={projects} setProjects={setProjects} people={people} squads={squads} history={history} personProfile={viewerProfile} isAdmin={isAdmin} permCan={permCan} initialId={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} myLens={myLens} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} timeframe={timeframe} onApplyTagFilter={applyTagFilter} />}
+          {activeTab === "summary" && <SummaryView loading={loading} error={error} projects={projects} people={people} squads={squads} globalFilters={globalFilters} onNavigate={handleNavigate} phaseDurationDefaults={phaseDurationDefaults} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} timeframe={timeframe} />}
+          {activeTab === "projects" && <ProjectsView key={navPayload || `proj-${projResetKey}`} projects={projects} setProjects={setProjects} people={people} squads={squads} history={history} personProfile={viewerProfile} isAdmin={isAdmin} permCan={permCan} initialId={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} timeframe={timeframe} onApplyTagFilter={applyTagFilter} />}
 
-          {activeTab === "people" && <PeopleDeepDive key={navPayload || "ppl"} loading={loading} error={error} people={people} setPeople={setPeople} projects={projects} history={history} initialPerson={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} myLens={myLens} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} viewerName={viewerProfile?.name} isAdmin={isAdmin} timeframe={timeframe} />}
+          {activeTab === "people" && <PeopleDeepDive key={navPayload || "ppl"} loading={loading} error={error} people={people} setPeople={setPeople} projects={projects} history={history} initialPerson={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} viewerName={viewerProfile?.name} isAdmin={isAdmin} timeframe={timeframe} />}
           {activeTab === "settings" && <SettingsView squads={squads} setSquads={setSquads} roles={roles} setRoles={setRoles} people={people} setPeople={setPeople} projects={projects} setProjects={setProjects} permConfig={permConfig} setPermConfig={handleSetPermConfig} />}
           {activeTab === "guide" && (
             <React.Suspense fallback={<div style={{ padding: 40, color: c.textDim, fontFamily: body, fontSize: 16, textAlign: "center" }}>Loading...</div>}>
@@ -702,6 +672,7 @@ function FlowDashboard({ auth }) {
             </React.Suspense>
           )}
           {activeTab === "logs" && <LogsView />}
+          {activeTab === "notifications" && <NotificationCenter projects={projects} people={people} viewer={viewerProfile} followedProjects={followedProjects} onNavigate={handleNavigate} />}
         </ErrorCatcher>
       </main>
       )}
@@ -745,8 +716,7 @@ function FlowDashboard({ auth }) {
           }}
           onComplete={() => {
             setShowTutorial(false);
-            // Turn on My Lens and switch to Projects tab
-            if (!myLens) toggleMyLens();
+            // Switch to Projects tab
             setActiveTab("projects");
             setNavPayload(null);
             setDetailLabel(null);
