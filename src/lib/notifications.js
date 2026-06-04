@@ -29,7 +29,7 @@ function fmtDate(iso) {
 // Action Required is critical for everyone. Otherwise:
 //   Lead (isAdmin)      → sees everything (squad oversight)
 //   PM (Product Manager)→ own projects + all phase transitions
-//   Stakeholder (any other role / undefined) → P0s, shipped, blockers + own
+//   Stakeholder (any other role / undefined) → shipped, blockers + own
 // Always returns true for action-tier so nothing critical is hidden.
 function passesRole(n, viewer) {
   if (n.tier === "action") return true;
@@ -40,7 +40,7 @@ function passesRole(n, viewer) {
     return n.ownedByViewer || n.type === "phase" || n.type === "shipped";
   }
   // Stakeholder (any person): high-signal items + their own projects
-  return n.isP0 || n.type === "shipped" || n.ownedByViewer;
+  return n.type === "shipped" || n.ownedByViewer;
 }
 
 /**
@@ -88,7 +88,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
       meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
       ts: p.blockedAt || p.lastActivityAt || new Date(now).toISOString(),
       cta: "Resolve", resolved: false,
-      ownedByViewer: ownedByViewer(p.id), isP0: p.priority === "P0",
+      ownedByViewer: ownedByViewer(p.id),
       reason: p.blockedReason || null,
     });
   });
@@ -111,7 +111,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
       meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
       ts: p.endDate + "T00:00:00",
       cta: "View Project", resolved: false,
-      ownedByViewer: ownedByViewer(p.id), isP0: p.priority === "P0",
+      ownedByViewer: ownedByViewer(p.id),
     });
   });
 
@@ -147,7 +147,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
       meta: `Unblocked · Owner: ${firstName(p.owner)}`,
       ts: ev.created_at,
       cta: "View Project", resolved: true,
-      ownedByViewer: ownedByViewer(p.id), isP0: p.priority === "P0",
+      ownedByViewer: ownedByViewer(p.id),
     });
   });
 
@@ -176,7 +176,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: shipped ? `${p.name} shipped to ${to}` : `${p.name} moved ${d.from ? `${d.from} → ${to}` : `to ${to}`}`,
         meta: `${who} · Owner: ${firstName(p.owner)}`,
         ts: ev.created_at, cta: "View Project", resolved: false,
-        ownedByViewer: owned, isP0: p.priority === "P0",
+        ownedByViewer: owned,
       });
       return;
     }
@@ -192,7 +192,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: `New project: ${p.name}`,
         meta: `Created by ${who}`,
         ts: ev.created_at, cta: "View Project", resolved: false,
-        ownedByViewer: owned, isP0: p.priority === "P0",
+        ownedByViewer: owned,
       });
       return;
     }
@@ -210,7 +210,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: `${p.name} status changed to ${d.to || "?"}`,
         meta: `${who} · Owner: ${firstName(p.owner)}`,
         ts: ev.created_at, cta: "View Project", resolved: false,
-        ownedByViewer: owned, isP0: p.priority === "P0",
+        ownedByViewer: owned,
       });
       return;
     }
@@ -224,7 +224,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: `${p.name} shipped`,
         meta: `${who} · Owner: ${firstName(p.owner)}`,
         ts: ev.created_at, cta: "View Project", resolved: false,
-        ownedByViewer: owned, isP0: p.priority === "P0",
+        ownedByViewer: owned,
       });
       return;
     }
@@ -239,7 +239,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: `${who} ${added ? "added" : "removed"} ${firstName(d.person_name) || "a member"} ${added ? "to" : "from"} ${p.name}`,
         meta: fmtDate(ev.created_at),
         ts: ev.created_at, cta: null, resolved: false,
-        ownedByViewer: owned, isP0: p.priority === "P0",
+        ownedByViewer: owned,
       });
       return;
     }
@@ -263,7 +263,7 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
         title: `${firstName(author?.name)} commented on ${p.name}`,
         meta: snippet ? `“${snippet}${cmt.body.length > 60 ? "…" : ""}”` : fmtDate(cmt.created_at),
         ts: cmt.created_at, cta: "View Project", resolved: false,
-        ownedByViewer: true, isP0: p.priority === "P0",
+        ownedByViewer: true,
       });
     });
   });

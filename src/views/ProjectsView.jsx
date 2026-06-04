@@ -17,17 +17,11 @@ import { getProjectRole, can as defaultCan } from "../lib/permissions";
 import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB, recordBackdatedTrackInDB } from "../lib/mutations";
-import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition, gaDateOf } from "../lib/tracks";
+import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition, isShipped, isInFlight, hasShipMarker, shippedDateOf, furthestStageOf } from "../lib/tracks";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
 
-// Phase scope for the In Flight vs Shipped tab filter.
-// Kept local to this view — `shipPhases` (Alpha/Beta/GA) in theme.js is
-// unchanged and still correct for metrics, colors, and stage validation
-// (where Alpha/Beta count as "released to users").
-const IN_FLIGHT_PHASES = ["PRD", "Design", "Dev", "QA"];
-const SHIPPED_PHASES = ["Alpha", "Beta", "GA"];
 
 /* ══════════════════════════════════════════════════════════════════
    HELPERS
@@ -207,9 +201,9 @@ function deriveProjectMetrics(projects, history, today) {
 
     // Risk flags
     const daysToEnd = daysBetween(today, proj.endDate);
-    const isShipped = proj.status === "shipped";
-    if (daysToEnd <= 14 && daysToEnd > 0 && !isShipped) m.endingSoon = true;
-    if (daysToEnd < 0 && !isShipped) m.overdue = true;
+    const shipped = isShipped(proj);
+    if (daysToEnd <= 14 && daysToEnd > 0 && !shipped) m.endingSoon = true;
+    if (daysToEnd < 0 && !shipped) m.overdue = true;
 
     // Active tracks
     m.activeTracks = getActiveTracks(proj);
@@ -238,7 +232,7 @@ function deriveProjectMetrics(projects, history, today) {
     }
 
     // At Risk: overdue OR no activity in 1 week OR blocked
-    m.atRisk = proj.status !== "deprioritized" && !isShipped && proj.status !== "upcoming" && (
+    m.atRisk = proj.status !== "deprioritized" && !shipped && proj.status !== "upcoming" && (
       m.overdue || m.noActivityWeek || m.isBlocked
     );
 
@@ -266,10 +260,6 @@ function sortList(list, key, dir, metrics, today) {
       case "phase":
       case "tracks": return d * (allPhases.indexOf(a.phase) - allPhases.indexOf(b.phase));
       case "total": return d * ((metrics[a.id]?.historyTotal || 0) - (metrics[b.id]?.historyTotal || 0));
-      case "priority": {
-        const order = { P0: 0, P1: 1, P2: 2, P3: 3 };
-        return d * ((order[a.priority] ?? 2) - (order[b.priority] ?? 2));
-      }
       case "people": return d * ((metrics[a.id]?.teamMembers.length || 0) - (metrics[b.id]?.teamMembers.length || 0));
       case "last": {
         // Sort by the project's actual lastActivityAt timestamp (newest first
@@ -286,6 +276,62 @@ function sortList(list, key, dir, metrics, today) {
       default: return 0;
     }
   });
+}
+
+// Info affordance for the board's "Single Track Mode" toggle. The (i) icon is
+// keyboard-focusable; hover or focus reveals a styled tooltip explaining the
+// de-dupe behaviour and the fixed stage progression. Replaces the old
+// "De-duplicated · N hidden" summary line.
+const STAGE_ORDER_LABEL = "PRD → Design → Dev → QA → Alpha → Beta";
+function BoardStageInfo() {
+  const [show, setShow] = React.useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        type="button"
+        aria-label={`About Single Track Mode. Shows each project only in its most advanced stage. Stage order: ${STAGE_ORDER_LABEL}`}
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        onClick={(e) => { e.stopPropagation(); setShow(s => !s); }}
+        style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 18, height: 18, padding: 0, flexShrink: 0,
+          border: "none", background: "transparent",
+          color: show ? c.accent : c.textDim, cursor: "help",
+          transition: `color ${motion.fast.duration} ${motion.fast.easing}`,
+        }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+      </button>
+      {show && (
+        <div role="tooltip" style={{
+          position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 300,
+          width: 284, padding: `${space[2] + 2}px ${space[3]}px`,
+          background: c.surfaceSolid, border: `1px solid ${c.border}`,
+          borderRadius: layout.radiusMd,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.14), 0 4px 12px rgba(0,0,0,0.07)",
+          textAlign: "left", pointerEvents: "none",
+        }}>
+          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 700, color: c.text, marginBottom: 4 }}>
+            Single Track Mode
+          </div>
+          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 400, color: c.textMid, lineHeight: 1.5 }}>
+            When enabled, a project spanning multiple stages appears only in its most advanced stage — removed from the earlier ones.
+          </div>
+          <div style={{
+            marginTop: 7, paddingTop: 6, borderTop: `1px solid ${c.border}`,
+            fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: "0.02em",
+          }}>
+            {STAGE_ORDER_LABEL}
+          </div>
+        </div>
+      )}
+    </span>
+  );
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -411,7 +457,7 @@ export default function ProjectsView({
   const [boardSquads, setBoardSquads] = useState([]);
   const [boardOwners, setBoardOwners] = useState([]);
   const [boardPhases, setBoardPhases] = useState([]);
-  // "Latest Stage Only" board toggle — de-dupes multi-track projects to their
+  // "Single Track Mode" board toggle — de-dupes multi-track projects to their
   // furthest stage. Persisted within the session so it survives navigating away.
   const [boardLatestOnly, setBoardLatestOnly] = useState(() => {
     try { return sessionStorage.getItem("flow_board_latest_only") === "1"; } catch { return false; }
@@ -576,24 +622,24 @@ export default function ProjectsView({
       list = filtered;
     } else {
       switch (activeTab) {
-        case "active": list = filtered.filter(p => p.status === "in_flight"); break;
+        case "active": list = filtered.filter(isInFlight); break;
         case "at_risk": list = filtered.filter(p => metrics[p.id]?.atRisk); break;
-        case "shipped": list = filtered.filter(p => p.status === "shipped"); break;
+        case "shipped": list = filtered.filter(isShipped); break;
         case "blocked": list = filtered.filter(p => p.status === "blocked" || metrics[p.id]?.isBlocked); break;
         case "deprioritized": list = filtered.filter(p => p.status === "deprioritized"); break;
         case "upcoming": list = filtered.filter(p => p.status === "upcoming").sort((a, b) =>
           (a.tentativeStartDate || "9999").localeCompare(b.tentativeStartDate || "9999")
         ); break;
-        case "overdue": list = filtered.filter(p => p.status === "in_flight" && metrics[p.id]?.overdue); break;
+        case "overdue": list = filtered.filter(p => isInFlight(p) && metrics[p.id]?.overdue); break;
         default: list = filtered;
       }
     }
     const sorted = sortList(list, sortKey, sortDir, metrics, today);
     const pinned = sorted.filter(p => pinnedIds.has(p.id));
-    // Shipped (GA) — most recently GA'd first.
-    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "shipped")
-      .sort((a, b) => (gaDateOf(b) || "").localeCompare(gaDateOf(a) || ""));
-    const regular = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "in_flight");
+    // Shipped (Alpha/Beta/live) — most recently shipped first.
+    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && isShipped(p))
+      .sort((a, b) => (shippedDateOf(b) || "").localeCompare(shippedDateOf(a) || ""));
+    const regular = sorted.filter(p => !pinnedIds.has(p.id) && isInFlight(p));
     const blocked = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "blocked");
     const depri = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "deprioritized");
     const upcoming = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "upcoming")
@@ -605,8 +651,8 @@ export default function ProjectsView({
   // Risk is computed once in `deriveProjectMetrics`; this section
   // never re-derives it, so numbers stay consistent with the table.
   const summary = useMemo(() => {
-    const active = filtered.filter(p => p.status === "in_flight");
-    const shipped = filtered.filter(p => p.status === "shipped");
+    const active = filtered.filter(isInFlight);
+    const shipped = filtered.filter(isShipped);
     const depri = filtered.filter(p => p.status === "deprioritized");
     const upcomingProjs = filtered.filter(p => p.status === "upcoming");
     const blockedProjs = filtered.filter(p => p.status === "blocked" || metrics[p.id]?.isBlocked);
@@ -617,11 +663,11 @@ export default function ProjectsView({
       trackCounts[t] = active.filter(p => (metrics[p.id]?.activeTracks || []).includes(t)).length;
     });
     const overdueCount = active.filter(p => metrics[p.id]?.overdue).length;
-    // Projects with Alpha or Beta tracks active count toward "shipping" bucket
-    const alphaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Alpha")).length;
-    const betaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Beta")).length;
-    const shippedTotal = shipped.length + alphaActive + betaActive;
-    return { active: active.length, shipped: shipped.length, shippedTotal, alphaActive, betaActive, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
+    const shipMarked = shipped.filter(hasShipMarker).length;
+    // Shipped breakdown by furthest release stage. GA reads as "Launched".
+    const shippedByStage = { Alpha: 0, Beta: 0, GA: 0 };
+    shipped.forEach(p => { const st = furthestStageOf(p); if (shippedByStage[st] != null) shippedByStage[st]++; });
+    return { active: active.length, shipped: shipped.length, shipMarked, shippedByStage, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
   }, [filtered, metrics, today]);
 
   // ── Gantt-specific filter (separate from registry filters) ──
@@ -903,9 +949,9 @@ export default function ProjectsView({
             onClick={() => setActiveTab("active")}
             active={activeTab === "active"}
           >
-            {/* In Flight spans PRD → Design → Dev → QA → Alpha → Beta */}
+            {/* In Flight spans the build stages: PRD → Design → Dev → QA */}
             <PillRow>
-              {["PRD", "Design", "Dev", "QA", "Alpha", "Beta"].map(t => (
+              {["PRD", "Design", "Dev", "QA"].map(t => (
                 <Pill
                   key={t}
                   count={summary.trackCounts?.[t] || 0}
@@ -922,9 +968,11 @@ export default function ProjectsView({
             onClick={() => setActiveTab(activeTab === "shipped" ? "all" : "shipped")}
             active={activeTab === "shipped"}
           >
-            {/* Shipped = GA only (Alpha/Beta are In Flight) */}
+            {/* Shipped spans the release stages: Launched (GA) · Alpha · Beta */}
             <PillRow>
-              <Pill count={summary.shipped} label="GA" color={c.green} />
+              <Pill count={summary.shippedByStage?.GA || 0} label="Launched" color={c.green} />
+              <Pill count={summary.shippedByStage?.Alpha || 0} label="Alpha" color={pc["Alpha"] || c.textDim} />
+              <Pill count={summary.shippedByStage?.Beta || 0} label="Beta" color={pc["Beta"] || c.textDim} />
             </PillRow>
           </KpiCard>
           <KpiCard
@@ -1068,7 +1116,7 @@ export default function ProjectsView({
         // PRD → Design → Dev → QA → Alpha → Beta.
         const columns = trackNames;
         // Build column data. By default a project appears in every column where it
-        // has an active track. With "Latest Stage Only" ON, it appears only in its
+        // has an active track. With "Single Track Mode" ON, it appears only in its
         // furthest active stage; earlier-stage appearances are counted as hidden.
         const columnProjects = {};
         const hiddenByColumn = {};
@@ -1090,7 +1138,6 @@ export default function ProjectsView({
             active.forEach(t => { if (columnProjects[t]) columnProjects[t].push(proj); });
           }
         });
-        const totalHidden = Object.values(hiddenByColumn).reduce((a, b) => a + b, 0);
 
         // Drag helpers
         const setDragOverPhase = (ph) => { dragOverRef.current = ph; setDragOverPhaseRaw(ph); };
@@ -1220,15 +1267,22 @@ export default function ProjectsView({
             minWidth: columns.length * 180,
             padding: `${space[2]}px 0`,
           }}>
-            {/* ── Board toolbar: Latest Stage Only toggle (right-aligned, summary below) ── */}
+            {/* ── Board toolbar: Single Track Mode toggle + info tooltip (right-aligned) ── */}
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: space[1] + 2 }}>
+              <span id="board-lso-desc" style={{
+                position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+                overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+              }}>
+                Single Track Mode: show each project only in its most advanced stage. Stage order: {STAGE_ORDER_LABEL}.
+              </span>
+              <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: space[2] }}>
                 <button
                   type="button"
                   role="switch"
                   aria-checked={boardLatestOnly}
+                  aria-describedby="board-lso-desc"
                   onClick={toggleBoardLatestOnly}
-                  title="Projects spanning multiple stages appear only in their most advanced stage"
+                  title={`Single Track Mode: show each project only in its most advanced stage. Stage order: ${STAGE_ORDER_LABEL}`}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: space[2],
                     padding: `5px ${space[3]}px 5px ${space[2]}px`, borderRadius: 999,
@@ -1254,20 +1308,9 @@ export default function ProjectsView({
                   <span style={{
                     fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
                     color: boardLatestOnly ? c.accent : c.textMid, whiteSpace: "nowrap",
-                  }}>Latest Stage Only</span>
+                  }}>Single Track Mode</span>
                 </button>
-                {boardLatestOnly && (
-                  <span style={{
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600,
-                    color: c.textMid, letterSpacing: "0.02em", textAlign: "right",
-                  }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={c.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                    De-duplicated{totalHidden > 0 ? ` · ${totalHidden} earlier-stage ${totalHidden === 1 ? "entry" : "entries"} hidden` : ""}
-                  </span>
-                )}
+                <BoardStageInfo />
               </div>
             </div>
 
@@ -1318,7 +1361,7 @@ export default function ProjectsView({
                             color: c.textDim, background: "transparent",
                             padding: "2px 6px", borderRadius: layout.radiusPill,
                             border: `1px dashed ${c.border}`, whiteSpace: "nowrap",
-                          }}>−{hiddenByColumn[track]} hidden</span>
+                          }}>{hiddenByColumn[track]} hidden</span>
                       )}
                       <span style={{
                         fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
@@ -1397,7 +1440,7 @@ export default function ProjectsView({
                             >✓</button>
                           )}
 
-                          {/* ID + priority + blocked */}
+                          {/* ID + blocked */}
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
                               <span style={{
@@ -1405,11 +1448,6 @@ export default function ProjectsView({
                                 fontWeight: 700, letterSpacing: "0.02em",
                                 color: ec.project,
                               }}>{proj.id}</span>
-                              {proj.priority && (() => {
-                                const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                                const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
-                                return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt} style={{ fontSize: 9, padding: "1px 5px" }}>{proj.priority}</Tag>;
-                              })()}
                             </div>
                             {m.overdue && <span title="Overdue" style={{ fontSize: 11, lineHeight: 1 }}>⚠️</span>}
                             {m.isBlocked && <Tag color="#fff" bg={c.red} style={{ fontSize: 9, padding: "1px 5px", fontWeight: 700 }}>BLOCKED</Tag>}
@@ -1579,11 +1617,6 @@ export default function ProjectsView({
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
                         <span style={{ fontFamily: typo.monoMd.font, fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", color: ec.project }}>{proj.id}</span>
-                        {proj.priority && (() => {
-                          const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                          const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
-                          return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt} style={{ fontSize: 9, padding: "1px 5px" }}>{proj.priority}</Tag>;
-                        })()}
                       </div>
                       <div style={{ fontFamily: typo.bodySm.font, fontSize: 13, fontWeight: 600, color: c.text, lineHeight: 1.4 }}>{proj.name}</div>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: typo.bodySm.font, fontSize: 11, color: c.textMid }}>
@@ -1702,7 +1735,6 @@ export default function ProjectsView({
                 <tr>
                   <Th col="squad" style={{ position: "sticky", left: 0, top: "var(--flow-sticky-top, 0px)", background: "rgba(232, 232, 232, 0.72)", backdropFilter: "blur(16px) saturate(1.3)", WebkitBackdropFilter: "blur(16px) saturate(1.3)", zIndex: 11, minWidth: 70 }}>Squad</Th>
                   <Th col="project" style={{ minWidth: 160 }}>Project</Th>
-                  <Th col="priority" style={{ minWidth: 50, textAlign: "center" }}>Pri</Th>
                   <Th col="owner" style={{ minWidth: 80 }}>Owner</Th>
                   <Th col="tracks" style={{ minWidth: 90, textAlign: "center" }}>Tracks</Th>
                   <Th col="people" style={{ minWidth: 70, textAlign: "center" }}>Team</Th>
@@ -1719,10 +1751,10 @@ export default function ProjectsView({
                   const isDimmed = proj.status === "deprioritized";
                   const isUpcoming = proj.status === "upcoming";
                   const isPinned = pinnedIds.has(proj.id);
-                  const isShipped = proj.status === "shipped";
+                  const shipped = isShipped(proj);
                   const isBlockedProj = proj.status === "blocked" || m.isBlocked;
                   const isBlockedOrOverdue = isBlockedProj || m.overdue;
-                  const leftBarColor = isShipped ? c.green : isBlockedOrOverdue ? c.red : null;
+                  const leftBarColor = shipped ? c.green : isBlockedOrOverdue ? c.red : null;
 
                   const cellBorder = "1px solid rgba(0,0,0,0.03)";
                   const rowBg = isFocused ? `${c.accent}10` : isHovered ? "rgba(0,0,0,0.012)" : c.surface;
@@ -1807,26 +1839,19 @@ export default function ProjectsView({
                           {m.isBlocked && <Tag color={c.red} bg={c.redDim} style={{ flexShrink: 0 }}>BLOCKED</Tag>}
                           {proj.status === "deprioritized" && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>DEPRIORITIZED</Tag>}
                           {isUpcoming && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>UPCOMING</Tag>}
-                          {proj.status === "shipped" && (
-                            <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}
-                              title={gaDateOf(proj) ? `Went live ${new Date(gaDateOf(proj) + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : "Shipped to GA"}>
-                              {gaDateOf(proj) ? `GA · ${new Date(gaDateOf(proj) + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "GA"}
-                            </Tag>
-                          )}
+                          {shipped && (() => {
+                            const stage = furthestStageOf(proj);
+                            const stageTxt = stage === "GA" ? "Live" : stage;
+                            const sd = shippedDateOf(proj);
+                            const dateShort = sd ? new Date(sd + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : null;
+                            return (
+                              <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}
+                                title={sd ? `Shipped ${new Date(sd + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : "Shipped"}>
+                                {hasShipMarker(proj) ? "🚀 " : ""}{stageTxt}{dateShort ? ` · ${dateShort}` : ""}
+                              </Tag>
+                            );
+                          })()}
                         </div>
-                      </td>
-
-                      {/* Priority */}
-                      <td style={{
-                        padding: `${space[3]}px ${space[4]}px`, textAlign: "center",
-                        borderBottom: cellBorder,
-                      }}>
-                        {(() => {
-                          const pri = proj.priority || "P2";
-                          const pColors = { P0: c.red, P1: c.amber, P2: c.textMid, P3: c.textGhost };
-                          const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
-                          return <Tag color={pColors[pri]} bg={pBg[pri]} style={{ fontSize: 10, padding: "2px 7px" }}>{pri}</Tag>;
-                        })()}
                       </td>
 
                       {/* Owner */}
@@ -1845,7 +1870,7 @@ export default function ProjectsView({
                         borderBottom: cellBorder,
                       }}>
                         {isUpcoming ? <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
-                         : isShipped ? (
+                         : shipped ? (
                           <span style={{
                             padding: "1px 5px", borderRadius: layout.radiusXs,
                             background: `${c.green}15`, color: c.green,
@@ -1973,7 +1998,7 @@ export default function ProjectsView({
                             </span>
                           ) : <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
                         ) : (() => {
-                          const displayEnd = isShipped && proj.shipped_at ? proj.shipped_at.slice(0, 10) : proj.endDate;
+                          const displayEnd = shipped && proj.shipped_at ? proj.shipped_at.slice(0, 10) : proj.endDate;
                           const allocated = daysBetween(proj.startDate, displayEnd);
                           const elapsed = Math.max(0, Math.min(daysBetween(proj.startDate, today), allocated));
                           const pct = allocated > 0 ? Math.round((elapsed / allocated) * 100) : 0;
@@ -1984,7 +2009,7 @@ export default function ProjectsView({
                                   {fmtDate(proj.startDate)}
                                 </span>
                                 <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textDim }}>→</span>
-                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: isShipped ? c.green : c.textMid }}>
+                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: shipped ? c.green : c.textMid }}>
                                   {fmtDate(displayEnd)}
                                 </span>
                               </div>
@@ -2200,7 +2225,6 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   const [name, setName] = useState("");
   const [owner, setOwner] = useState(personProfile?.name || "");
   const [squad, setSquad] = useState(personProfile?.squad || "");
-  const [priority, setPriority] = useState("P2");
   const [complexity, setComplexity] = useState("");
   const [startNow, setStartNow] = useState(false);
   const [selectedTracks, setSelectedTracks] = useState(["PRD"]);
@@ -2248,7 +2272,7 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
       status: startNow ? "in_flight" : "upcoming",
       tracks,
       tentativeStartDate: startNow ? null : (tentativeStart || null),
-      priority, complexity: complexity || null,
+      complexity: complexity || null,
       isBlocked: false, blockedReason: null, blockedAt: null,
       lastActivityAt: now, createdAt: now,
       phaseDurationOverrides: null,
@@ -2298,12 +2322,6 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
     </div>
   );
 
-  const priorityOpts = [
-    { value: "P0", label: "Critical", color: c.red },
-    { value: "P1", label: "P1", color: c.amber },
-    { value: "P2", label: "P2", color: c.textMid },
-    { value: "P3", label: "P3", color: c.textDim },
-  ];
 
   const complexityOpts = [
     { value: "S", label: "Low", color: c.green },
@@ -2370,16 +2388,10 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
             </div>
           </div>
 
-          {/* Priority + Complexity side by side */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
-            <div>
-              <div style={fieldLabel}>Priority</div>
-              <PillSelector options={priorityOpts} value={priority} onChange={setPriority} />
-            </div>
-            <div>
-              <div style={fieldLabel}>Complexity <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
-              <PillSelector options={complexityOpts} value={complexity} onChange={v => setComplexity(prev => prev === v ? "" : v)} />
-            </div>
+          {/* Complexity */}
+          <div>
+            <div style={fieldLabel}>Complexity <span style={{ fontWeight: 400, color: c.textDim }}>— optional</span></div>
+            <PillSelector options={complexityOpts} value={complexity} onChange={v => setComplexity(prev => prev === v ? "" : v)} />
           </div>
 
           {/* Timeline — toggle + dates */}
@@ -2600,7 +2612,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [editEnd, setEditEnd] = useState(proj.endDate || "");
   const [editActualStart, setEditActualStart] = useState(proj.actualStartDate || "");
   const [editActualEnd, setEditActualEnd] = useState(proj.actualEndDate || "");
-  const [editPriority, setEditPriority] = useState(proj.priority || "P2");
   const [editComplexity, setEditComplexity] = useState(proj.complexity || "");
   const [editPhaseOverrides, setEditPhaseOverrides] = useState(proj.phaseDurationOverrides || {});
   const setEditing = useCallback((val) => {
@@ -2610,10 +2621,10 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       setEditPhase(proj.phase); setEditStatus(proj.status || "active");
       setEditStart(proj.startDate || ""); setEditEnd(proj.endDate || "");
       setEditActualStart(proj.actualStartDate || ""); setEditActualEnd(proj.actualEndDate || "");
-      setEditPriority(proj.priority || "P2"); setEditComplexity(proj.complexity || "");
+      setEditComplexity(proj.complexity || "");
     }
     setEditingRaw(val);
-  }, [proj.name, proj.owner, proj.squad, proj.phase, proj.status, proj.startDate, proj.endDate, proj.actualStartDate, proj.actualEndDate, proj.priority, proj.complexity]);
+  }, [proj.name, proj.owner, proj.squad, proj.phase, proj.status, proj.startDate, proj.endDate, proj.actualStartDate, proj.actualEndDate, proj.complexity]);
   const [depriReasonModal, setDepriReasonModal] = useState(false);
   const [depriReasonText, setDepriReasonText] = useState("");
   const [blockedReasonModal, setBlockedReasonModal] = useState(false);
@@ -2885,7 +2896,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
       startDate: editStart || null, endDate: editEnd || null,
       actualStartDate: shipPhases.includes(editPhase) ? (editActualStart || null) : null,
       actualEndDate: shipPhases.includes(editPhase) ? (editActualEnd || null) : null,
-      priority: editPriority, complexity: editComplexity || null,
+      complexity: editComplexity || null,
       phaseDurationOverrides: Object.keys(editPhaseOverrides).length ? editPhaseOverrides : null,
     } : p));
     exitEdit();
@@ -2947,7 +2958,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
     setEditOwner(proj.owner); setEditSquad(proj.squad); setEditPhase(proj.phase); setEditStatus(proj.status || "active");
     setEditStart(proj.startDate || ""); setEditEnd(proj.endDate || "");
     setEditActualStart(proj.actualStartDate || ""); setEditActualEnd(proj.actualEndDate || "");
-    setEditPriority(proj.priority || "P2"); setEditComplexity(proj.complexity || "");
+    setEditComplexity(proj.complexity || "");
     exitEdit();
   };
 
@@ -3252,7 +3263,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
           <div key="read" style={{
             animation: `fadeIn ${motion.fast.duration} ${motion.fast.easing} both`,
           }}>
-            {/* Row 1: ID + Priority · Updated */}
+            {/* Row 1: ID · Updated */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3] }}>
               <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
                 <span style={{
@@ -3261,11 +3272,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                   padding: `2px 6px`, borderRadius: layout.radiusXs,
                   background: c.amberDim,
                 }}>{proj.id}</span>
-                {proj.priority && (() => {
-                  const pColors = { P0: c.red, P1: c.amber, P2: c.textDim, P3: c.textGhost };
-                  const pBg = { P0: c.redDim, P1: c.amberDim, P2: c.surfaceAlt, P3: c.surfaceAlt };
-                  return <Tag color={pColors[proj.priority] || c.textDim} bg={pBg[proj.priority] || c.surfaceAlt}>{proj.priority === "P0" ? "Critical" : proj.priority}</Tag>;
-                })()}
                 {proj.complexity && (() => {
                   const cLabels = { S: "Low", M: "Med", L: "High", XL: "High" };
                   return <Tag color={c.textMid} bg={c.surfaceAlt}>{cLabels[proj.complexity] || proj.complexity}</Tag>;
@@ -3494,26 +3500,15 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 <SearchSelect value={editSquad} onChange={setEditSquad} options={allSquads} placeholder="Search squads..." />
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
-              <div style={{ position: "relative", zIndex: 4 }}>
-                <Label style={{ marginBottom: space[1] }}>Priority</Label>
-                <Sel value={editPriority} onChange={e => setEditPriority(e.target.value)} style={{ width: "100%" }}>
-                  <option value="P0">P0 — Critical</option>
-                  <option value="P1">P1 — High</option>
-                  <option value="P2">P2 — Medium</option>
-                  <option value="P3">P3 — Low</option>
-                </Sel>
-              </div>
-              <div>
-                <Label style={{ marginBottom: space[1] }}>Complexity</Label>
-                <Sel value={editComplexity} onChange={e => setEditComplexity(e.target.value)} style={{ width: "100%" }}>
-                  <option value="">Not set</option>
-                  <option value="S">Low</option>
-                  <option value="M">Medium</option>
-                  <option value="L">High</option>
-                  <option value="XL">Very High</option>
-                </Sel>
-              </div>
+            <div>
+              <Label style={{ marginBottom: space[1] }}>Complexity</Label>
+              <Sel value={editComplexity} onChange={e => setEditComplexity(e.target.value)} style={{ width: "100%" }}>
+                <option value="">Not set</option>
+                <option value="S">Low</option>
+                <option value="M">Medium</option>
+                <option value="L">High</option>
+                <option value="XL">Very High</option>
+              </Sel>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
               <div>

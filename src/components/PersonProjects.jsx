@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import React, { useMemo } from "react";
 import { c, typo, space, layout, body, mono, phaseColors as getPhaseColors } from "../styles/theme";
-import { getActiveTracks } from "../lib/tracks";
+import { getActiveTracks, isShipped, isInFlight } from "../lib/tracks";
 import usePersonActivity from "../hooks/usePersonActivity";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 
@@ -58,7 +58,7 @@ function ProjectRow({ proj, onNavigate, label }) {
       </div>
 
       {/* Status badge (right side) */}
-      {proj.status === "shipped" && (
+      {isShipped(proj) && (
         <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: c.green, textTransform: "uppercase", flexShrink: 0 }}>Shipped</span>
       )}
 
@@ -183,8 +183,8 @@ export default function PersonProjects({ person, projects, onProjectNavigate }) 
     };
 
     return {
-      inFlight: all.filter(p => p.status === "in_flight" || p.status === "blocked").sort(sortOwnerFirst),
-      shipped: all.filter(p => p.status === "shipped").sort(sortOwnerFirst),
+      inFlight: all.filter(p => isInFlight(p) || p.status === "blocked").sort(sortOwnerFirst),
+      shipped: all.filter(isShipped).sort(sortOwnerFirst),
     };
   }, [projects, memberships, projectsById, personId]);
 

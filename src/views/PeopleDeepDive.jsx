@@ -7,6 +7,7 @@ import PersonProjects from "../components/PersonProjects";
 import useKeyboard from "../hooks/useKeyboard";
 import useDevLabel from "../hooks/useDevLabel";
 import { initialsOf } from "../lib/names";
+import { isShipped, isInFlight } from "../lib/tracks";
 import { isDevSeedMode, devStore, seedPeople } from "../data/devSeed";
 import { addPersonToDB } from "../lib/mutations";
 
@@ -97,7 +98,7 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
   // Compute per-person active project counts (in_flight + blocked only)
   const personProjectCounts = useMemo(() => {
     const map = {};
-    const activeProjs = (projects || []).filter(p => p.status === "in_flight" || p.status === "blocked");
+    const activeProjs = (projects || []).filter(p => isInFlight(p) || p.status === "blocked");
     people.forEach(p => {
       const count = activeProjs.filter(proj =>
         proj.owner_id === p.id ||
@@ -560,8 +561,8 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
     proj.owner_id === personObj.id ||
     (isDevSeedMode() && devStore.listMembers(proj.id)?.some(m => m.person_id === personObj.id))
   );
-  const inFlightProjects = personProjects.filter(p => p.status === "in_flight" || p.status === "blocked");
-  const shippedProjects = personProjects.filter(p => p.status === "shipped");
+  const inFlightProjects = personProjects.filter(p => isInFlight(p) || p.status === "blocked");
+  const shippedProjects = personProjects.filter(isShipped);
 
   // Weeks active (rough: divide total comments by some weekly average)
   const weeksActive = Math.max(1, Math.ceil(activityScore / 3));

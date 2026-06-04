@@ -7,12 +7,10 @@ import { c, typo, layout, space, motion, mono } from "../styles/theme";
 import { FilterChip, Btn, Modal, selChevron } from "./shared";
 import { ANNOUNCEMENTS } from "../data/announcements";
 import { isDevSeedMode, devStore } from "../data/devSeed";
-import { addProjectCommentToDB } from "../lib/mutations";
-import { timeAgo, fmtAbsolute } from "../lib/time";
+import { timeAgo } from "../lib/time";
 import { buildNotifications } from "../lib/notifications";
 import { timeframeForMode, customTimeframe, presetSummary, todayISO, canGoForward, DEFAULT_TIMEFRAME_MODE } from "../lib/timeframe";
 import FlowLogo from "./FlowLogo";
-import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 import { initialsOf } from "../lib/names";
 
@@ -110,6 +108,7 @@ function TimeframePicker({ timeframe, setTimeframe }) {
   };
 
   const PRESETS = [
+    { key: "rolling14", name: "Last 14 days", ...presetSummary("rolling14") },
     { key: "week", name: "Week", ...presetSummary("week") },
     { key: "month", name: "Month", ...presetSummary("month") },
     { key: "quarter", name: "Quarter", ...presetSummary("quarter") },
@@ -214,7 +213,9 @@ function TimeframePicker({ timeframe, setTimeframe }) {
                       <span style={{ fontFamily: typo.bodySm.font, fontSize: 13, fontWeight: 600, color: active ? c.accent : c.text }}>{opt.name}</span>
                     </span>
                     <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600, color: active ? c.accent : c.textDim, whiteSpace: "nowrap" }}>
-                      {active ? timeframe.label : opt.label}{opt.key === "quarter" ? ` (${active ? timeframe.sublabel : opt.sublabel})` : ""}
+                      {opt.key === "rolling14"
+                        ? (active ? timeframe.sublabel : opt.label)
+                        : active ? timeframe.label : opt.label}{opt.key === "quarter" ? ` (${active ? timeframe.sublabel : opt.sublabel})` : ""}
                     </span>
                   </button>
                 );
@@ -257,7 +258,7 @@ function TimeframePicker({ timeframe, setTimeframe }) {
                     onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = c.textMid; }}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
-                    Reset to Week
+                    Reset to Last 14 days
                   </button>
                 </div>
               )}
@@ -635,24 +636,13 @@ export function Header({
 
         <CompactSearch onClick={onCmdOpen} />
 
-        {/* ── Inbox (mentions) ── */}
-        <InboxBell
+        {/* ── Notification center (Mentions · Project Updates · Needs Attention · Updates) ── */}
+        <NotificationCenter
           projects={projects}
           people={people}
           currentPerson={currentPerson}
           onNavigate={onNavigate}
-          myLens={myLens}
         />
-
-        {/* ── Notification bell (urgency-tiered project notifications) ── */}
-        <div className="flow-bell-sm-hide" style={{ display: "flex", alignItems: "center" }}>
-          <NotificationBell
-            projects={projects}
-            people={people}
-            currentPerson={currentPerson}
-            onNavigate={onNavigate}
-          />
-        </div>
 
         {/* ── Terminal button (Settings, Logs & Rant) ── */}
         <button
@@ -1589,44 +1579,67 @@ function DayRhythmPill({ onNavigateToGuide }) {
    NOTIFICATION BELL — urgency-tiered project notification center
    Action Required (red) · Heads Up (amber) · FYI (gray)
    ════════════════════════════════════════════════════════════════════ */
-const NOTIF_TIERS = {
-  action: { key: "action", label: "Action Required", color: c.red },
-  heads:  { key: "heads",  label: "Heads Up",        color: c.amber },
-  fyi:    { key: "fyi",    label: "FYI",             color: c.textDim },
-};
 
-function NotificationBell({ projects = [], people = [], currentPerson, onNavigate }) {
-  const devRef = useDevLabel('NotificationBell', 'src/components/AppShell.jsx', 'Urgency-tiered project notification center');
+function NotificationCenter({ projects = [], people = [], currentPerson, onNavigate }) {
+  const devRef = useDevLabel('NotificationCenter', 'src/components/AppShell.jsx', 'Unified center: Mentions · Project Updates · Needs Attention · Updates');
   const [open, setOpen] = React.useState(false);
-  const [tab, setTab] = React.useState("all"); // all | action | heads | fyi
+  const [tab, setTab] = React.useState("attention"); // mentions | updates | attention | whatsnew
   const ref = React.useRef(null);
-  const [seen, setSeen] = React.useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("flow_notif_seen") || "[]")); }
-    catch { return new Set(); }
-  });
-  // Re-derive when the dev activity log changes (live updates).
+
+  // Live re-derive when the dev activity log changes.
   const [_evVer, _setEvVer] = React.useState(0);
   React.useEffect(() => {
     if (!isDevSeedMode()) return;
     return devStore.subscribe(() => _setEvVer(v => v + 1));
   }, []);
 
+  // ── Read state (notifications + mentions + announcements) ──
+  const [notifSeen, setNotifSeen] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("flow_notif_seen") || "[]")); } catch { return new Set(); }
+  });
+  const [mentionRead, setMentionRead] = React.useState(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem("flow_inbox_read") || "[]")); } catch { return new Set(); }
+  });
+  const [annSeen, setAnnSeen] = React.useState(() => {
+    try { return localStorage.getItem(LAST_SEEN_KEY) || ""; } catch { return ""; }
+  });
+  const persistNotif = (s) => { try { localStorage.setItem("flow_notif_seen", JSON.stringify([...s])); } catch { /* ignore */ } };
+  const persistMention = (s) => { try { sessionStorage.setItem("flow_inbox_read", JSON.stringify([...s])); } catch { /* ignore */ } };
+
+  const projectsById = React.useMemo(() => new Map((projects || []).map(p => [p.id, p])), [projects]);
+  const peopleById = React.useMemo(() => new Map((people || []).map(p => [p.id, p])), [people]);
+
+  // ── Data sources ──
   const notifications = React.useMemo(
     () => buildNotifications({ projects, people, viewer: currentPerson }),
     [projects, people, currentPerson, _evVer]
   );
+  const attention = React.useMemo(() => notifications.filter(n => n.tier === "action"), [notifications]);
+  const projectUpdates = React.useMemo(() => notifications.filter(n => n.tier !== "action"), [notifications]);
 
-  const persistSeen = (next) => {
-    try { localStorage.setItem("flow_notif_seen", JSON.stringify([...next])); } catch { /* ignore */ }
-  };
-  const markSeen = React.useCallback((id) => {
-    setSeen(prev => { const next = new Set(prev); next.add(id); persistSeen(next); return next; });
-  }, []);
-  const markAllSeen = React.useCallback(() => {
-    setSeen(prev => { const next = new Set(prev); notifications.forEach(n => next.add(n.id)); persistSeen(next); return next; });
-  }, [notifications]);
+  const viewerName = currentPerson?.name;
+  const mentions = React.useMemo(() => {
+    if (!viewerName || !isDevSeedMode()) return [];
+    const vn = viewerName.toLowerCase();
+    const fn = viewerName.split(/\s+/)[0]?.toLowerCase();
+    const all = (projects || []).flatMap(proj => (devStore.listComments(proj.id) || []).map(cmt => ({ ...cmt, _projectId: proj.id })));
+    return all
+      .filter(cmt => !cmt.deleted_at && cmt.author_id !== currentPerson?.id && extractMentionsFromBody(cmt.body).some(n => n === vn || n === fn))
+      .map(cmt => ({ comment: cmt, project: projectsById.get(cmt._projectId), author: peopleById.get(cmt.author_id) }))
+      .sort((a, b) => new Date(b.comment.created_at) - new Date(a.comment.created_at));
+  }, [projects, viewerName, currentPerson?.id, projectsById, peopleById, _evVer]);
 
-  // Close on outside click
+  const announcements = React.useMemo(() => [...ANNOUNCEMENTS].sort((a, b) => (a.date < b.date ? 1 : -1)), []);
+  const newestAnn = announcements[0]?.date || "";
+
+  // ── Unread counts ──
+  const mentionsUnread = mentions.filter(m => !mentionRead.has(m.comment.id)).length;
+  const attentionUnread = attention.filter(n => !notifSeen.has(n.id)).length;
+  const updatesUnread = projectUpdates.filter(n => !notifSeen.has(n.id)).length;
+  const annUnread = newestAnn && newestAnn > (annSeen || "") ? 1 : 0;
+  const badge = attentionUnread + mentionsUnread; // bell badge = high-signal only
+
+  // ── Close on outside click ──
   React.useEffect(() => {
     if (!open) return;
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -1634,180 +1647,210 @@ function NotificationBell({ projects = [], people = [], currentPerson, onNavigat
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const isUnread = (n) => !seen.has(n.id);
-  const unreadByTier = { action: 0, heads: 0, fyi: 0 };
-  notifications.forEach(n => { if (isUnread(n)) unreadByTier[n.tier] += 1; });
-  const actionUnread = unreadByTier.action;           // bell badge = Action Required only
-  const totalUnread = unreadByTier.action + unreadByTier.heads + unreadByTier.fyi;
+  // Stamp announcements as seen while viewing the Updates tab.
+  React.useEffect(() => {
+    if (!open || tab !== "whatsnew" || !annUnread) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const stamp = newestAnn && newestAnn > today ? newestAnn : today;
+    try { localStorage.setItem(LAST_SEEN_KEY, stamp); } catch { /* ignore */ }
+    setAnnSeen(stamp);
+  }, [open, tab, annUnread, newestAnn]);
 
-  const visible = notifications.filter(n => tab === "all" ? true : n.tier === tab);
+  const markNotif = (id) => setNotifSeen(prev => { const n = new Set(prev); n.add(id); persistNotif(n); return n; });
+  const markMention = (id) => setMentionRead(prev => { const n = new Set(prev); n.add(id); persistMention(n); return n; });
+  const goProject = (projectId) => { if (onNavigate && projectId) { onNavigate("projects", projectId); setOpen(false); } };
 
-  const openNotif = (n) => {
-    markSeen(n.id);
-    setOpen(false);
-    if (onNavigate && n.projectId) onNavigate("projects", n.projectId);
+  const markAllInTab = () => {
+    if (tab === "mentions") setMentionRead(prev => { const n = new Set(prev); mentions.forEach(m => n.add(m.comment.id)); persistMention(n); return n; });
+    else if (tab === "updates") setNotifSeen(prev => { const n = new Set(prev); projectUpdates.forEach(x => n.add(x.id)); persistNotif(n); return n; });
+    else if (tab === "attention") setNotifSeen(prev => { const n = new Set(prev); attention.forEach(x => n.add(x.id)); persistNotif(n); return n; });
+  };
+
+  const TABS = [
+    { key: "mentions", label: "Mentions", count: mentionsUnread, color: c.cyan },
+    { key: "updates", label: "Project Updates", count: updatesUnread, color: c.amber },
+    { key: "attention", label: "Needs Attention", count: attentionUnread, color: c.red },
+    { key: "whatsnew", label: "Updates", count: annUnread, color: c.accent },
+  ];
+
+  // ── Bento card primitives ──
+  const cardStyle = (accent, big) => ({
+    gridColumn: big ? "1 / -1" : "auto",
+    display: "flex", flexDirection: "column", gap: 5,
+    padding: "12px 13px", borderRadius: layout.radiusMd,
+    background: c.surfaceAlt, border: `1px solid ${c.border}`,
+    borderLeft: `3px solid ${accent}`,
+    textAlign: "left", width: "100%", fontFamily: "inherit",
+    transition: "background 0.12s, border-color 0.12s",
+  });
+  const dot = (color) => ({ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 });
+  const hoverIn = (e) => { e.currentTarget.style.background = c.surface; e.currentTarget.style.borderColor = c.textGhost || c.border; };
+  const hoverOut = (e) => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.borderColor = c.border; };
+
+  const annStyle = (tag) => {
+    const m = {
+      new: { label: "New", color: c.green },
+      fix: { label: "Fix", color: c.red },
+      update: { label: "Update", color: c.blue },
+      soon: { label: "Soon", color: c.purple },
+    };
+    return m[tag] || { label: "Update", color: c.accent };
+  };
+  const fmtAnnDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  const mentionCard = (m, big) => {
+    const unread = !mentionRead.has(m.comment.id);
+    const body = (m.comment.body || "").replace(/\s+/g, " ").trim();
+    const snippet = body.slice(0, big ? 220 : 110);
+    return (
+      <button key={m.comment.id} type="button" onClick={() => { markMention(m.comment.id); goProject(m.comment._projectId); }}
+        style={{ ...cardStyle(c.cyan, big), cursor: "pointer" }} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 700, color: c.text }}>{m.author?.name || "Someone"}</span>
+          {unread && <span style={dot(c.cyan)} />}
+        </div>
+        <div style={{ fontSize: 12, color: c.textMid, lineHeight: 1.4 }}>mentioned you in <b style={{ color: c.text }}>{m.project?.name || "a project"}</b></div>
+        <div style={{ fontSize: 12, color: c.textDim, lineHeight: 1.45, fontStyle: "italic" }}>“{snippet}{body.length > snippet.length ? "…" : ""}”</div>
+        <div style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim }}>{timeAgo(m.comment.created_at)}</div>
+      </button>
+    );
+  };
+
+  const notifCard = (n, big, accent) => {
+    const unread = !notifSeen.has(n.id);
+    return (
+      <button key={n.id} type="button" onClick={() => { markNotif(n.id); goProject(n.projectId); }}
+        style={{ ...cardStyle(n.resolved ? c.border : accent, big), cursor: "pointer", opacity: n.resolved ? 0.65 : 1 }}
+        onMouseEnter={hoverIn} onMouseLeave={hoverOut}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontSize: 12.5, fontWeight: unread ? 700 : 500, color: c.text, lineHeight: 1.4 }}>{n.title}</span>
+          {unread && !n.resolved && <span style={{ ...dot(accent), marginTop: 5 }} />}
+        </div>
+        {n.reason && <div style={{ fontSize: 11.5, color: c.textMid, lineHeight: 1.4 }}>Reason: {n.reason}</div>}
+        <div style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, lineHeight: 1.4 }}>{n.meta} · {timeAgo(n.ts)}</div>
+        {n.resolved
+          ? <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: c.green, background: c.green + "18", padding: "1px 5px", borderRadius: 4, alignSelf: "flex-start", textTransform: "uppercase", letterSpacing: "0.04em" }}>Resolved</span>
+          : n.cta && <span style={{ fontSize: 11, fontWeight: 700, color: accent }}>{n.cta} →</span>}
+      </button>
+    );
+  };
+
+  const annCard = (a, big) => {
+    const s = annStyle(a.tag);
+    return (
+      <div key={a.id} style={{ ...cardStyle(s.color, big), cursor: "default" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: s.color, background: s.color + "18", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</span>
+          <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, color: c.textDim }}>{fmtAnnDate(a.date)}</span>
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: c.text, lineHeight: 1.35 }}>{a.title}</div>
+        <div style={{ fontSize: 12, color: c.textMid, lineHeight: 1.5 }}>{a.body}</div>
+      </div>
+    );
+  };
+
+  let items;
+  if (tab === "mentions") items = mentions.map((m, i) => mentionCard(m, i === 0));
+  else if (tab === "updates") items = projectUpdates.map((n, i) => notifCard(n, i === 0, c.amber));
+  else if (tab === "attention") items = attention.map((n, i) => notifCard(n, i === 0, c.red));
+  else items = announcements.map((a, i) => annCard(a, i === 0));
+
+  const emptyCopy = {
+    mentions: "No one has mentioned you yet.",
+    updates: "No recent project updates.",
+    attention: "Nothing needs your attention right now.",
+    whatsnew: "No product updates yet.",
   };
 
   return (
     <div ref={(el) => { ref.current = el; if (devRef) devRef.current = el; }} style={{ position: "relative" }}>
       <button
-        onClick={() => { setOpen(v => !v); }}
+        type="button"
+        onClick={() => setOpen(v => !v)}
         style={{
           width: 34, height: 34, borderRadius: layout.radiusSm,
           border: `1px solid ${open ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.15)"}`,
           background: open ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
           cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
           position: "relative",
-          transition: `background ${motion.interaction.duration} ${motion.interaction.easing}, border-color ${motion.interaction.duration} ${motion.interaction.easing}, color ${motion.interaction.duration} ${motion.interaction.easing}, box-shadow ${motion.interaction.duration} ${motion.interaction.easing}, transform ${motion.interaction.duration} ${motion.interaction.easing}, opacity ${motion.interaction.duration} ${motion.interaction.easing}`,
+          transition: `background ${motion.interaction.duration} ${motion.interaction.easing}, border-color ${motion.interaction.duration} ${motion.interaction.easing}`,
         }}
-        title={`Notifications${actionUnread > 0 ? ` — ${actionUnread} action required` : ""}`}
-        aria-label={`Notifications, ${actionUnread} action required`}
+        title={`Notifications${badge > 0 ? ` — ${badge} need${badge === 1 ? "s" : ""} you` : ""}`}
+        aria-label={`Notifications, ${badge} unread`}
       >
-        {/* Bell icon */}
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={open ? c.orange : c.textMid} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
-        {/* Action-Required count badge (red) — only Action Required, not total */}
-        {actionUnread > 0 && (
+        {badge > 0 && (
           <div style={{
             position: "absolute", top: -3, right: -3, minWidth: 16, height: 16,
             padding: "0 4px", borderRadius: 999,
-            background: c.red, color: "#fff",
+            background: attentionUnread > 0 ? c.red : c.cyan, color: "#fff",
             fontFamily: mono, fontSize: 10, fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center",
             boxShadow: `0 0 0 2px #1A1A1A`,
-          }}>{actionUnread > 9 ? "9+" : actionUnread}</div>
+          }}>{badge > 9 ? "9+" : badge}</div>
         )}
       </button>
 
-      {/* Dropdown */}
       {open && (
         <div style={{
-          position: "absolute", top: "100%", right: 0, marginTop: 6,
-          width: 380, maxHeight: 520, display: "flex", flexDirection: "column",
+          position: "absolute", top: "100%", right: 0, marginTop: 8,
+          width: "min(720px, calc(100vw - 32px))",
+          maxHeight: "min(640px, calc(100vh - 110px))",
+          display: "flex", flexDirection: "column",
           background: c.surfaceSolid, border: `1px solid ${c.border}`,
-          borderRadius: layout.radiusMd, boxShadow: c.shadowElevated,
-          zIndex: 200,
+          borderRadius: layout.radiusLg, boxShadow: c.shadowElevated,
+          zIndex: 200, overflow: "hidden",
           animation: "flow-load-fade-in 0.15s ease-out",
         }}>
           {/* Header */}
-          <div style={{
-            padding: "10px 14px", borderBottom: `1px solid ${c.border}`,
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-          }}>
-            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: c.text, letterSpacing: "0.04em" }}>NOTIFICATIONS</span>
-            {totalUnread > 0 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); markAllSeen(); }}
-                style={{
-                  background: "transparent", border: "none", cursor: "pointer",
-                  fontSize: 11, fontWeight: 600, color: c.accent, fontFamily: "inherit",
-                }}
-              >Mark all as read</button>
+          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: c.text, letterSpacing: "0.05em" }}>NOTIFICATIONS</span>
+            {tab !== "whatsnew" && (
+              <button type="button" onClick={(e) => { e.stopPropagation(); markAllInTab(); }} style={{
+                background: "transparent", border: "none", cursor: "pointer",
+                fontSize: 11, fontWeight: 600, color: c.accent, fontFamily: "inherit",
+              }}>Mark all as read</button>
             )}
           </div>
 
           {/* Tabs */}
-          <div style={{ display: "flex", gap: 4, padding: "8px 10px", borderBottom: `1px solid ${c.border}` }}>
-            {[
-              { key: "all", label: "All", count: totalUnread },
-              { key: "action", label: "Action Required", count: unreadByTier.action },
-              { key: "heads", label: "Heads Up", count: unreadByTier.heads },
-            ].map(t => {
+          <div style={{ display: "flex", gap: 6, padding: "10px 14px", borderBottom: `1px solid ${c.border}`, flexWrap: "wrap" }}>
+            {TABS.map(t => {
               const active = tab === t.key;
-              const accent = t.key === "action" ? c.red : t.key === "heads" ? c.amber : c.accent;
               return (
-                <button key={t.key} onClick={() => setTab(t.key)} style={{
-                  flex: t.key === "action" ? "1 1 auto" : "0 0 auto",
-                  padding: "4px 9px", borderRadius: 999, cursor: "pointer",
-                  border: `1px solid ${active ? accent : c.border}`,
-                  background: active ? accent + "14" : "transparent",
-                  color: active ? accent : c.textMid,
-                  fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
-                  display: "inline-flex", alignItems: "center", gap: 4,
+                <button key={t.key} type="button" onClick={() => setTab(t.key)} style={{
+                  padding: "5px 11px", borderRadius: 999, cursor: "pointer",
+                  border: `1px solid ${active ? t.color : c.border}`,
+                  background: active ? t.color + "14" : "transparent",
+                  color: active ? t.color : c.textMid,
+                  fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                  display: "inline-flex", alignItems: "center", gap: 5,
                 }}>
                   {t.label}
                   {t.count > 0 && (
-                    <span style={{
-                      fontFamily: mono, fontSize: 10, fontWeight: 700,
-                      color: active ? accent : c.textDim,
-                    }}>{t.count}</span>
+                    <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, color: active ? t.color : c.textDim }}>{t.count}</span>
                   )}
                 </button>
               );
             })}
           </div>
 
-          {/* Items */}
-          <div style={{ overflowY: "auto", scrollbarWidth: "thin", flex: 1 }}>
-            {visible.length === 0 ? (
-              <div style={{
-                padding: "40px 20px", textAlign: "center",
-                display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
-              }}>
-                <span style={{ fontSize: 30 }}>🎉</span>
+          {/* Bento content */}
+          <div style={{ overflowY: "auto", flex: 1, padding: space[3] }}>
+            {items.length === 0 ? (
+              <div style={{ padding: "48px 20px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 30 }}>{tab === "attention" ? "🎉" : "✨"}</span>
                 <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>You're all caught up</span>
-                <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim }}>
-                  {tab === "action" ? "Nothing needs your attention right now." : "No notifications in this view."}
-                </span>
+                <span style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textDim }}>{emptyCopy[tab]}</span>
               </div>
-            ) : visible.map(n => {
-              const unread = isUnread(n);
-              const tier = NOTIF_TIERS[n.tier];
-              const nameAtStart = n.title.indexOf(n.projectName) === 0;
-              return (
-                <button
-                  key={n.id}
-                  onClick={() => openNotif(n)}
-                  style={{
-                    width: "100%", padding: "11px 14px",
-                    background: unread && !n.resolved ? tier.color + "0A" : "transparent",
-                    border: "none", borderBottom: `1px solid ${c.border}`,
-                    borderLeft: `3px solid ${n.resolved ? c.border : (unread ? tier.color : "transparent")}`,
-                    cursor: "pointer", textAlign: "left", fontFamily: "inherit",
-                    display: "flex", gap: 10, alignItems: "flex-start",
-                    opacity: n.resolved ? 0.62 : 1,
-                    transition: "background 0.1s",
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = "rgba(0,0,0,0.03)"}
-                  onMouseLeave={e => e.currentTarget.style.background = unread && !n.resolved ? tier.color + "0A" : "transparent"}
-                >
-                  {/* Urgency dot */}
-                  <span aria-hidden="true" style={{
-                    width: 8, height: 8, borderRadius: "50%", marginTop: 5, flexShrink: 0,
-                    background: n.resolved ? c.textDim : tier.color,
-                  }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Title — project name bold */}
-                    <div style={{ fontSize: 12.5, color: c.text, fontWeight: unread ? 600 : 400, lineHeight: 1.4 }}>
-                      {nameAtStart ? (<><b style={{ fontWeight: 700 }}>{n.projectName}</b>{n.title.slice(n.projectName.length)}</>) : n.title}
-                      {n.resolved && (
-                        <span style={{
-                          marginLeft: 6, fontFamily: mono, fontSize: 9, fontWeight: 700,
-                          color: c.green, background: c.green + "18", padding: "1px 5px",
-                          borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.04em",
-                        }}>Resolved</span>
-                      )}
-                    </div>
-                    {/* Meta: days since activity · owner · timestamp */}
-                    <div style={{
-                      fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, marginTop: 3, lineHeight: 1.4,
-                    }}>
-                      {n.meta} · {timeAgo(n.ts)}
-                    </div>
-                    {/* CTA */}
-                    {n.cta && !n.resolved && (
-                      <span style={{
-                        display: "inline-block", marginTop: 5,
-                        fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 700,
-                        color: n.tier === "action" ? c.red : c.accent,
-                      }}>{n.cta} →</span>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[2], alignContent: "start" }}>
+                {items}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1986,496 +2029,6 @@ function extractMentionsFromBody(text) {
   return [...mentions];
 }
 
-function InboxBell({ projects, people, currentPerson, onNavigate, myLens = false }) {
-  const [open, setOpen] = React.useState(false);
-  const [readIds, setReadIds] = React.useState(() => {
-    try { return new Set(JSON.parse(sessionStorage.getItem("flow_inbox_read") || "[]")); }
-    catch (_e) { return new Set(); }
-  });
-  const [replyingTo, setReplyingTo] = React.useState(null);
-  const [replyDraft, setReplyDraft] = React.useState("");
-  const [posting, setPosting] = React.useState(false);
-  const [squadFilter, setSquadFilter] = React.useState(null);
-  const [_evVer, _setEvVer] = React.useState(0);
-  React.useEffect(() => {
-    if (!isDevSeedMode()) return;
-    return devStore.subscribe(() => _setEvVer(v => v + 1));
-  }, []);
-
-  const viewerName = currentPerson?.name;
-  const peopleById = React.useMemo(() => {
-    const m = new Map();
-    (people || []).forEach(p => m.set(p.id, p));
-    return m;
-  }, [people]);
-  const projectsById = React.useMemo(() => {
-    const m = new Map();
-    (projects || []).forEach(p => m.set(p.id, p));
-    return m;
-  }, [projects]);
-
-  const mentions = React.useMemo(() => {
-    if (!viewerName || !isDevSeedMode()) return [];
-    const vn = viewerName.toLowerCase();
-    const firstName = viewerName.split(/\s+/)[0]?.toLowerCase();
-    const allComments = (projects || []).flatMap(proj => {
-      const comments = devStore.listComments(proj.id) || [];
-      return comments.map(cmt => ({ ...cmt, _projectId: proj.id }));
-    });
-    return allComments
-      .filter(cmt => {
-        if (cmt.deleted_at) return false;
-        if (cmt.author_id === currentPerson?.id) return false;
-        const names = extractMentionsFromBody(cmt.body);
-        return names.some(n => n === vn || n === firstName);
-      })
-      .map(cmt => ({
-        comment: cmt,
-        project: projectsById.get(cmt._projectId || cmt.project_id),
-        author: peopleById.get(cmt.author_id),
-      }))
-      .sort((a, b) => new Date(b.comment.created_at) - new Date(a.comment.created_at));
-  }, [projects, people, viewerName, currentPerson?.id, projectsById, peopleById]);
-
-  // Weekly project updates: new projects + phase changes from the last 7 days
-  const weeklyUpdates = React.useMemo(() => {
-    if (!isDevSeedMode()) return [];
-    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const updates = [];
-    (projects || []).forEach(proj => {
-      const events = devStore.listEvents(proj.id) || [];
-      events.forEach(ev => {
-        const ts = new Date(ev.created_at);
-        if (ts < oneWeekAgo) return;
-        const d = ev.details || {};
-        if (ev.action === "project_created") {
-          updates.push({
-            id: ev.id, icon: "🆕", who: ev.user_name || "Someone",
-            label: "created a new project ",
-            projectName: proj.name, projectId: proj.id,
-            squad: proj.squad, ts: ev.created_at,
-          });
-        } else if (ev.action === "project_phase_changed") {
-          updates.push({
-            id: ev.id, icon: "📦", who: ev.user_name || "Someone",
-            label: "moved ",
-            projectName: proj.name,
-            phaseText: `from ${d.from || "?"} → ${d.to || "?"}`,
-            projectId: proj.id, squad: proj.squad, ts: ev.created_at,
-          });
-        } else if (ev.action === "shoutout") {
-          updates.push({
-            id: ev.id, icon: "👏", who: d.from || ev.user_name || "Someone",
-            label: "gave a shoutout for ",
-            projectName: proj.name, projectId: proj.id,
-            squad: proj.squad, ts: ev.created_at,
-          });
-        } else if (ev.action === "feedback") {
-          updates.push({
-            id: ev.id, icon: "💬", who: d.from || ev.user_name || "Someone",
-            label: "left feedback on ",
-            projectName: proj.name, projectId: proj.id,
-            squad: proj.squad, ts: ev.created_at,
-          });
-        }
-      });
-    });
-    updates.sort((a, b) => new Date(b.ts) - new Date(a.ts));
-    return updates;
-  }, [projects, _evVer]);
-
-  const displayUnread = mentions.filter(m => !readIds.has(m.comment.id)).length;
-
-  const markRead = React.useCallback((id) => {
-    setReadIds(prev => {
-      const next = new Set(prev);
-      next.add(id);
-      try { sessionStorage.setItem("flow_inbox_read", JSON.stringify([...next])); } catch (_e) {}
-      return next;
-    });
-  }, []);
-  const markAllRead = React.useCallback(() => {
-    setReadIds(prev => {
-      const next = new Set(prev);
-      mentions.forEach(m => next.add(m.comment.id));
-      try { sessionStorage.setItem("flow_inbox_read", JSON.stringify([...next])); } catch (_e) {}
-      return next;
-    });
-  }, [mentions]);
-
-  const submitReply = React.useCallback(async (projectId) => {
-    if (!replyDraft.trim() || !projectId || !currentPerson?.id) return;
-    setPosting(true);
-    await addProjectCommentToDB(projectId, currentPerson.id, replyDraft.trim());
-    setPosting(false);
-    setReplyDraft("");
-    setReplyingTo(null);
-    window.__flowToast?.("Reply posted");
-  }, [replyDraft, currentPerson?.id]);
-
-  const highlightMention = (text, name) => {
-    if (!text || !name) return text;
-    const parts = [];
-    let lastIdx = 0;
-    const regex = new RegExp(`@(${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, "gi");
-    let m;
-    while ((m = regex.exec(text)) !== null) {
-      if (m.index > lastIdx) parts.push(text.slice(lastIdx, m.index));
-      parts.push(
-        <span key={m.index} style={{
-          background: c.accentDim, color: c.accent, fontWeight: 600,
-          padding: "1px 5px", borderRadius: 4,
-        }}>@{m[1]}</span>
-      );
-      lastIdx = m.index + m[0].length;
-    }
-    if (lastIdx < text.length) parts.push(text.slice(lastIdx));
-    return parts.length ? parts : text;
-  };
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label={displayUnread > 0 ? `Inbox — ${displayUnread} unread` : "Inbox"}
-        title="Inbox"
-        style={{
-          width: 34, height: 34, borderRadius: layout.radiusSm,
-          border: "1px solid rgba(255,255,255,0.15)",
-          background: "rgba(255,255,255,0.08)",
-          cursor: "pointer", position: "relative",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          outline: "none",
-          transition: `background ${motion.fast.duration} ${motion.fast.easing}, border-color ${motion.fast.duration} ${motion.fast.easing}`,
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.15)"; }}
-        onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
-      >
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="2" y="4" width="20" height="16" rx="2" />
-          <path d="M22 7l-10 7L2 7" />
-        </svg>
-        {displayUnread > 0 && (
-          <span aria-hidden="true" style={{
-            position: "absolute", top: 3, right: 3,
-            minWidth: 16, height: 16, borderRadius: 999,
-            background: "#FFFFFF", color: "#111111",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: mono, fontSize: 9, fontWeight: 700,
-            padding: "0 4px", boxSizing: "border-box",
-            boxShadow: "0 0 0 2px #111111",
-          }}>{displayUnread > 9 ? "9+" : displayUnread}</span>
-        )}
-      </button>
-
-      <Modal open={open} onClose={() => { setOpen(false); setReplyingTo(null); setSquadFilter(null); }} accent={c.accent} width={580}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: space[3] }}>
-          <span style={{
-            fontFamily: typo.displayMd.font, fontSize: typo.displayMd.size,
-            fontWeight: typo.displayMd.weight, color: c.text,
-          }}>Inbox</span>
-          {!myLens && (() => {
-            const allSquads = [...new Set((projects || []).map(p => p.squad).filter(Boolean))].sort();
-            if (allSquads.length < 2) return null;
-            return (
-              <select
-                value={squadFilter || ""}
-                onChange={e => setSquadFilter(e.target.value || null)}
-                style={{
-                  padding: "6px 30px 6px 14px", borderRadius: 999,
-                  border: `1px solid ${c.border}`, background: `${c.surfaceSolid} ${selChevron} no-repeat right 10px center / 12px 12px`,
-                  fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 500,
-                  color: c.text,
-                  cursor: "pointer", outline: "none",
-                  appearance: "none", WebkitAppearance: "none",
-                }}
-              >
-                <option value="">All squads</option>
-                {allSquads.map(sq => <option key={sq} value={sq}>{sq}</option>)}
-              </select>
-            );
-          })()}
-        </div>
-        <div style={{ height: "min(560px, 65vh)", display: "flex", flexDirection: "column" }}>
-
-        {/* ── Section 1: Mentions ── */}
-        {(() => {
-          const filtered = squadFilter
-            ? mentions.filter(m => m.project?.squad === squadFilter)
-            : mentions;
-          const filteredUnread = filtered.filter(m => !readIds.has(m.comment.id)).length;
-          return (
-            <div style={{ marginBottom: space[4], flexShrink: 0, maxHeight: "50%", display: "flex", flexDirection: "column" }}>
-              <div style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                marginBottom: space[3], flexShrink: 0,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                  <span style={{
-                    fontFamily: mono, fontSize: 10, fontWeight: 700,
-                    letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim,
-                  }}>Mentions</span>
-                  {filteredUnread > 0 && (
-                    <span style={{
-                      padding: "1px 7px", borderRadius: 999,
-                      background: c.accentDim, color: c.accent,
-                      fontFamily: mono, fontSize: 10, fontWeight: 700,
-                    }}>{filteredUnread}</span>
-                  )}
-                </div>
-                {filteredUnread > 0 && (
-                  <button type="button" onClick={markAllRead} style={{
-                    padding: `3px 8px`, borderRadius: layout.radiusSm,
-                    background: "transparent", border: `1px solid ${c.border}`,
-                    fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, color: c.textMid,
-                    cursor: "pointer",
-                  }}>Mark all read</button>
-                )}
-              </div>
-
-              {filtered.length === 0 ? (
-                <div style={{
-                  padding: `${space[4]}px`, textAlign: "center",
-                  background: c.surfaceAlt, borderRadius: layout.radiusSm,
-                  fontFamily: typo.bodyMd.font, fontSize: 13, color: c.textDim,
-                }}>
-                  {squadFilter ? `No mentions in ${squadFilter}.` : "No mentions yet. When someone @-mentions you, it'll appear here."}
-                </div>
-              ) : (
-                <div style={{
-                  flex: 1, minHeight: 0,
-                  overflowY: "auto",
-                  overscrollBehavior: "contain",
-                  display: "flex", flexDirection: "column", gap: space[2],
-                  paddingRight: space[1],
-                }}>
-                  {filtered.map(({ comment, project, author }) => {
-                    const isUnread = !readIds.has(comment.id);
-                    const isReplying = replyingTo === comment.id;
-                    return (
-                      <div key={comment.id} onClick={() => markRead(comment.id)} style={{
-                        padding: `${space[3]}px ${space[4]}px`,
-                        background: isUnread ? c.accentDim + "30" : c.surfaceAlt,
-                        border: `1px solid ${isUnread ? c.accent + "25" : c.border}`,
-                        borderRadius: layout.radiusSm,
-                        cursor: "default",
-                        transition: "background 150ms ease",
-                      }}>
-                        <div style={{
-                          display: "flex", alignItems: "center", justifyContent: "space-between",
-                          marginBottom: space[2],
-                        }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                            {isUnread && (
-                              <span style={{
-                                width: 7, height: 7, borderRadius: "50%", background: c.accent, flexShrink: 0,
-                              }} />
-                            )}
-                            <span style={{
-                              fontFamily: mono, fontSize: 10, fontWeight: 700,
-                              color: c.amber || c.textMid, letterSpacing: "0.03em",
-                            }}>
-                              {project?.id || "?"} · {project?.name || "Unknown"}{project?.squad ? <span style={{ color: c.textDim, fontWeight: 500 }}> · {project.squad}</span> : ""}
-                            </span>
-                          </div>
-                          <span title={fmtAbsolute(comment.created_at)} style={{
-                            fontSize: 11, color: c.textDim, fontFamily: typo.bodySm.font, whiteSpace: "nowrap",
-                          }}>
-                            {timeAgo(comment.created_at)}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", gap: space[2], alignItems: "flex-start" }}>
-                          <div style={{
-                            width: 26, height: 26, borderRadius: "50%",
-                            background: c.cyanDim, color: c.cyan,
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            fontFamily: mono, fontSize: 10, fontWeight: 700, flexShrink: 0,
-                            border: `1px solid ${c.cyan}33`,
-                          }}>
-                            {initialsOf(author?.name)}
-                          </div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{
-                              fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 700, color: c.text,
-                              marginBottom: 2,
-                            }}>{author?.name || "Unknown"}</div>
-                            <div style={{
-                              fontFamily: typo.bodyMd.font, fontSize: 13, lineHeight: 1.5, color: c.text,
-                              whiteSpace: "pre-wrap", wordBreak: "break-word",
-                            }}>
-                              {highlightMention(comment.body, viewerName)}
-                            </div>
-                          </div>
-                        </div>
-                        <div style={{
-                          marginTop: space[2], display: "flex", alignItems: "center", gap: space[2],
-                        }}>
-                          <button type="button"
-                            onClick={(e) => { e.stopPropagation(); setReplyingTo(isReplying ? null : comment.id); setReplyDraft(""); }}
-                            style={{
-                              padding: `4px 10px`, borderRadius: layout.radiusSm,
-                              background: isReplying ? c.accentDim : "transparent",
-                              border: `1px solid ${isReplying ? c.accent + "40" : c.border}`,
-                              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                              color: isReplying ? c.accent : c.textMid,
-                              cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                            }}
-                          >
-                            <span style={{ fontSize: 12 }}>↩</span> Reply
-                          </button>
-                          <button type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpen(false);
-                              onNavigate?.("projects", project?.id);
-                            }}
-                            style={{
-                              padding: `4px 10px`, borderRadius: layout.radiusSm,
-                              background: "transparent", border: `1px solid ${c.border}`,
-                              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, color: c.textMid,
-                              cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                            }}
-                          >
-                            Go to project <span style={{ fontSize: 10 }}>→</span>
-                          </button>
-                        </div>
-                        {isReplying && (
-                          <div style={{ display: "flex", gap: space[2], marginTop: space[2] }}>
-                            <input
-                              type="text"
-                              value={replyDraft}
-                              onChange={(e) => setReplyDraft(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitReply(comment._projectId || comment.project_id); } }}
-                              placeholder="Write a reply…"
-                              disabled={posting}
-                              autoFocus
-                              style={{
-                                flex: 1, padding: `7px 12px`, borderRadius: layout.radiusSm,
-                                background: c.surface, border: `1px solid ${c.border}`,
-                                fontFamily: typo.bodyMd.font, fontSize: 13, color: c.text, outline: "none",
-                              }}
-                            />
-                            <button type="button"
-                              onClick={() => submitReply(comment._projectId || comment.project_id)}
-                              disabled={posting || !replyDraft.trim()}
-                              style={{
-                                padding: `7px 14px`, borderRadius: layout.radiusSm,
-                                background: replyDraft.trim() && !posting ? c.accent : c.surfaceAlt,
-                                color: replyDraft.trim() && !posting ? "#fff" : c.textDim,
-                                border: "none", fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 600,
-                                cursor: replyDraft.trim() && !posting ? "pointer" : "not-allowed",
-                              }}
-                            >{posting ? "…" : "Reply"}</button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* ── Section 2: Weekly Project Updates (own scroll) ── */}
-        {(() => {
-          const effectiveSquad = myLens ? (currentPerson?.squad || null) : squadFilter;
-          const filtered = effectiveSquad
-            ? weeklyUpdates.filter(u => u.squad === effectiveSquad)
-            : weeklyUpdates;
-          return (
-            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              <div style={{
-                display: "flex", alignItems: "center", gap: space[2],
-                marginBottom: space[3], paddingTop: space[3],
-                borderTop: `1px solid ${c.border}`, flexShrink: 0,
-              }}>
-                <span style={{
-                  fontFamily: mono, fontSize: 10, fontWeight: 700,
-                  letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim,
-                }}>Weekly Project Updates</span>
-                {filtered.length > 0 && (
-                  <span style={{
-                    padding: "1px 7px", borderRadius: 999,
-                    background: c.surfaceAlt, border: `1px solid ${c.border}`,
-                    fontFamily: mono, fontSize: 10, fontWeight: 600, color: c.textMid,
-                  }}>{filtered.length}</span>
-                )}
-              </div>
-
-              {filtered.length === 0 ? (
-                <div style={{
-                  padding: `${space[4]}px`, textAlign: "center",
-                  background: c.surfaceAlt, borderRadius: layout.radiusSm,
-                  fontFamily: typo.bodyMd.font, fontSize: 13, color: c.textDim,
-                }}>
-                  {squadFilter ? `No updates in ${squadFilter} this week.` : "No project updates this week."}
-                </div>
-              ) : (
-                <div style={{
-                  flex: 1, minHeight: 0,
-                  overflowY: "auto", overscrollBehavior: "contain",
-                  display: "flex", flexDirection: "column", gap: 1,
-                  paddingRight: space[1],
-                }}>
-                  {filtered.map((upd, i) => (
-                    <div key={upd.id || i} style={{
-                      display: "flex", alignItems: "center", gap: space[3],
-                      padding: `${space[2] + 2}px ${space[3]}px`,
-                      borderRadius: layout.radiusSm,
-                      background: c.surfaceAlt,
-                      border: `1px solid ${c.border}`,
-                      marginBottom: 2,
-                    }}>
-                      <span style={{
-                        width: 28, height: 28, borderRadius: layout.radiusXs,
-                        background: upd.icon === "🆕" ? c.greenDim : upd.icon === "👏" ? c.accentDim || c.amberDim : upd.icon === "💬" ? c.cyanDim || c.surfaceAlt : c.amberDim,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 14, flexShrink: 0,
-                      }}>{upd.icon}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{
-                          fontFamily: typo.bodyMd.font, fontSize: 13, color: c.text, lineHeight: 1.5,
-                        }}>
-                          <span style={{ fontWeight: 600 }}>{upd.who}</span>{" "}
-                          {upd.label}
-                          <button type="button" onClick={() => { setOpen(false); onNavigate?.("projects", upd.projectId); }} style={{
-                            background: "transparent", border: "none", padding: 0, margin: 0,
-                            fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600,
-                            color: c.accent, cursor: "pointer", textDecoration: "underline",
-                            textUnderlineOffset: 2, textDecorationThickness: 1,
-                          }}>{upd.projectName}</button>
-                          {upd.phaseText && (
-                            <span style={{ color: c.textMid }}>{" "}{upd.phaseText}</span>
-                          )}
-                        </div>
-                        {upd.squad && (
-                          <span style={{
-                            display: "inline-block", marginTop: 2,
-                            padding: "1px 6px", borderRadius: 999,
-                            background: c.surface, border: `1px solid ${c.border}`,
-                            fontFamily: mono, fontSize: 9, fontWeight: 600, color: c.textDim,
-                          }}>{upd.squad}</span>
-                        )}
-                      </div>
-                      <span style={{
-                        fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim,
-                        whiteSpace: "nowrap", flexShrink: 0,
-                      }}>{timeAgo(upd.ts)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-        </div>
-      </Modal>
-    </>
-  );
-}
-
 /* ════════════════════════════════════════════════════════════════════
    ANNOUNCEMENTS — megaphone icon + modal
    ════════════════════════════════════════════════════════════════════
@@ -2485,275 +2038,3 @@ function InboxBell({ projects, people, currentPerson, onNavigate, myLens = false
    Data source: src/data/announcements.js (static). See that file for
    schema + how to publish a new entry. */
 const LAST_SEEN_KEY = "flow_announcements_last_seen";
-
-function AnnouncementsBell({ projects = [], people = [], currentPerson, onNavigate }) {
-  const devRef = useDevLabel('AnnouncementsBell', 'src/components/AppShell.jsx', 'Megaphone button in header; opens a modal with the announcement timeline.');
-  const [open, setOpen] = React.useState(false);
-  const [lastSeen, setLastSeen] = React.useState(() => {
-    try { return localStorage.getItem(LAST_SEEN_KEY) || ""; } catch { return ""; }
-  });
-
-  // Newest-first date. Announcements are already authored newest-first,
-  // but don't trust authoring order — derive from `date`.
-  const newestDate = React.useMemo(() => {
-    if (!ANNOUNCEMENTS.length) return "";
-    return ANNOUNCEMENTS.reduce((acc, a) => (a.date > acc ? a.date : acc), ANNOUNCEMENTS[0].date);
-  }, []);
-  const sorted = React.useMemo(() => [...ANNOUNCEMENTS].sort((a, b) => (a.date < b.date ? 1 : -1)), []);
-  const hasUnread = !!newestDate && newestDate > (lastSeen || "");
-
-  const markAllRead = () => {
-    // Stamp the newest announcement's date (or today, whichever is later).
-    // Using "today" alone under-counts future-dated "Coming soon" items —
-    // the dot would never clear until that date arrived.
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const stamp = newestDate && newestDate > today ? newestDate : today;
-      localStorage.setItem(LAST_SEEN_KEY, stamp);
-      setLastSeen(stamp);
-    } catch { /* localStorage may be disabled — no-op */ }
-  };
-
-  const [squadFilter, setSquadFilter] = React.useState("");
-
-  const squads = React.useMemo(
-    () => [...new Set(projects.map(p => p.squad).filter(Boolean))].sort(),
-    [projects]
-  );
-
-  /* ── Shipped projects timeline (never cleared) ── */
-  const shippedProjects = React.useMemo(() => {
-    return projects
-      .filter(p => p.status === "shipped")
-      .filter(p => !squadFilter || p.squad === squadFilter)
-      .map(p => {
-        // Normalize date — shippedAt could be ISO datetime or date-only
-        const raw = p.shippedAt || p.gaEnteredAt || "";
-        const dateStr = raw.slice(0, 10); // "YYYY-MM-DD"
-        return { ...p, _shipDate: dateStr };
-      })
-      .filter(p => p._shipDate && p._shipDate.length === 10 && !isNaN(new Date(p._shipDate + "T00:00:00")))
-      .sort((a, b) => b._shipDate.localeCompare(a._shipDate));
-  }, [projects, squadFilter]);
-
-  const shippedGroupedByMonth = React.useMemo(() => {
-    const groups = [];
-    let currentMonth = null;
-    let currentGroup = null;
-    for (const p of shippedProjects) {
-      const mk = p._shipDate.slice(0, 7);
-      if (mk !== currentMonth) {
-        currentMonth = mk;
-        const d = new Date(p._shipDate + "T00:00:00");
-        currentGroup = { month: mk, label: d.toLocaleDateString("en-US", { month: "long", year: "numeric" }), items: [] };
-        groups.push(currentGroup);
-      }
-      currentGroup.items.push(p);
-    }
-    return groups;
-  }, [shippedProjects]);
-
-  const featureTypeColor = (type) => {
-    const m = {
-      New:         { color: c.green,  bg: "#059669" + "18" },
-      Fix:         { color: c.red,    bg: "#DC2626" + "18" },
-      Enhancement: { color: c.blue,   bg: "#1D4ED8" + "18" },
-      "UI/UX":     { color: c.purple, bg: "#6D28D9" + "18" },
-    };
-    return m[type] || m.New;
-  };
-
-  const openPanel = () => { setOpen(true); markAllRead(); };
-  const closePanel = () => setOpen(false);
-
-  return (
-    <>
-      <button
-        ref={devRef}
-        type="button"
-        onClick={openPanel}
-        aria-label={hasUnread ? "Announcements — unread updates" : "Announcements"}
-        title="Announcements"
-        style={{
-          width: 34, height: 34, borderRadius: layout.radiusSm,
-          border: "1px solid rgba(255,255,255,0.15)",
-          background: "rgba(255,255,255,0.08)",
-          cursor: "pointer", position: "relative",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          outline: "none",
-          transition: `background ${motion.fast.duration} ${motion.fast.easing}, border-color ${motion.fast.duration} ${motion.fast.easing}`,
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.15)"; }}
-        onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
-        onFocus={e => { e.currentTarget.style.boxShadow = "0 0 0 2px rgba(255,255,255,0.3)"; }}
-        onBlur={e => { e.currentTarget.style.boxShadow = "none"; }}
-      >
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-          <line x1="12" y1="2" x2="12" y2="4" />
-        </svg>
-        {hasUnread && (
-          <span aria-hidden="true" style={{
-            position: "absolute", top: 6, right: 6,
-            width: 8, height: 8, borderRadius: "50%",
-            background: "#FFFFFF",
-            boxShadow: "0 0 0 2px #111111",
-          }} />
-        )}
-      </button>
-
-      <Modal open={open} onClose={closePanel} title="What's New" accent={c.accent} width={560}>
-        <div style={{ maxHeight: 520, overflowY: "auto", marginRight: -space[2], paddingRight: space[2] }}>
-          {/* ── Squad filter ── */}
-          {squads.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: space[3] }}>
-              <select
-                value={squadFilter}
-                onChange={e => setSquadFilter(e.target.value)}
-                style={{
-                  height: 28, padding: `0 ${space[2] + 20}px 0 ${space[2]}px`, borderRadius: layout.radiusSm,
-                  border: `1px solid ${c.border}`, background: `${c.surfaceSolid} ${selChevron} no-repeat right ${space[2]}px center / 12px 12px`, color: c.text,
-                  fontFamily: typo.monoSm.font, fontSize: 11, cursor: "pointer", outline: "none",
-                  appearance: "none", WebkitAppearance: "none",
-                }}
-              >
-                <option value="">All squads</option>
-                {squads.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-          )}
-
-          {shippedProjects.length === 0 ? (
-            <div style={{
-              padding: `${space[5]}px`, textAlign: "center",
-              borderRadius: layout.radiusSm, background: c.surfaceAlt,
-            }}>
-              <div style={{ fontSize: 28, marginBottom: space[2] }}>🚀</div>
-              <div style={{ fontFamily: typo.bodyMd.font, fontSize: 13, color: c.textDim }}>
-                No shipped projects yet. When a project is shipped, it'll appear here.
-              </div>
-            </div>
-          ) : (
-            shippedGroupedByMonth.map(group => (
-              <div key={group.month} style={{ marginBottom: space[5] }}>
-                {/* ── Month header ── */}
-                <div style={{
-                  display: "flex", alignItems: "center", gap: space[3],
-                  padding: `${space[1]}px 0 ${space[3]}px`,
-                }}>
-                  <span style={{
-                    fontFamily: typo.monoSm.font, fontSize: 11,
-                    fontWeight: 700, color: c.textDim,
-                    letterSpacing: "0.08em", textTransform: "uppercase",
-                    flexShrink: 0,
-                  }}>{group.label}</span>
-                  <span aria-hidden="true" style={{ flex: 1, height: 1, background: c.border }} />
-                </div>
-
-                {group.items.map((proj, i) => {
-                  const d = new Date(proj._shipDate + "T00:00:00");
-                  const dayLabel = d.toLocaleDateString("en-US", { day: "numeric", month: "short" });
-                  const ftc = featureTypeColor(proj.gaFeatureType);
-                  return (
-                    <div
-                      key={proj.id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "64px 1fr",
-                        gap: space[3],
-                        padding: `${space[3]}px 0`,
-                        borderTop: "none",
-                      }}
-                    >
-                      {/* Date column */}
-                      <div style={{
-                        fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
-                        color: c.text,
-                        letterSpacing: "0.02em",
-                        fontVariantNumeric: "tabular-nums",
-                        paddingTop: 2,
-                        lineHeight: 1.4,
-                      }}>{dayLabel}</div>
-
-                      {/* Content column */}
-                      <div style={{ minWidth: 0 }}>
-                        {/* Row 1: Project name + release type tag */}
-                        <div style={{ display: "flex", alignItems: "center", gap: space[2], marginBottom: 6 }}>
-                          <span style={{
-                            fontFamily: typo.bodyMd.font, fontSize: 14, fontWeight: 700,
-                            color: c.text, lineHeight: 1.3,
-                            flex: 1, minWidth: 0,
-                          }}>{proj.name}</span>
-                          <span style={{
-                            fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
-                            letterSpacing: "0.06em", textTransform: "uppercase",
-                            padding: "2px 6px", borderRadius: layout.radiusXs,
-                            background: ftc.bg, color: ftc.color,
-                            flexShrink: 0,
-                          }}>{proj.gaFeatureType || "New"}</span>
-                        </div>
-
-                        {/* Row 2: Owner | Squad */}
-                        <div style={{ display: "flex", alignItems: "center", gap: space[2], marginBottom: 6 }}>
-                          <span style={{
-                            fontFamily: typo.bodySm.font, fontSize: 12, color: c.cyan, fontWeight: 600,
-                          }}>{proj.owner}</span>
-                          <span style={{ color: c.textDim, fontSize: 11 }}>|</span>
-                          <span style={{
-                            fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid,
-                          }}>{proj.squad}</span>
-                        </div>
-
-                        {/* Row 3: Release note */}
-                        {proj.gaReleaseNote && (
-                          <div style={{
-                            fontFamily: typo.bodyMd.font, fontSize: 13,
-                            color: c.textMid, lineHeight: 1.55,
-                            marginBottom: space[2],
-                          }}>{proj.gaReleaseNote}</div>
-                        )}
-
-                        {/* Row 4: Action buttons */}
-                        <div style={{ display: "flex", gap: space[2] }}>
-                          {[
-                            { label: "Shoutout", icon: "👏", action: () => {
-                              const viewerName = currentPerson?.name || people?.[0]?.name || "AJ";
-                              if (isDevSeedMode()) {
-                                devStore.logEvent({ projectId: proj.id, action: "shoutout", userName: viewerName, details: { from: viewerName, projectName: proj.name } });
-                              }
-                              window.__flowToast?.(`🎉 Shoutout sent for ${proj.name}!`);
-                            }},
-                            { label: "Feedback", icon: "💬", action: () => { closePanel(); sessionStorage.setItem("flow_scroll_to", "feedback"); setTimeout(() => onNavigate?.("projects", proj.id), 100); } },
-                            { label: "View", icon: "→", action: () => { closePanel(); setTimeout(() => onNavigate?.("projects", proj.id), 100); } },
-                          ].map(btn => (
-                            <button key={btn.label} type="button" onClick={btn.action} style={{
-                              display: "inline-flex", alignItems: "center", gap: 4,
-                              padding: "4px 10px", borderRadius: 999,
-                              background: "transparent", border: `1px solid ${c.border}`,
-                              color: c.textMid, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
-                              cursor: "pointer", transition: "border-color 100ms ease, color 100ms ease",
-                            }}
-                              onMouseEnter={e => { e.currentTarget.style.borderColor = c.accent; e.currentTarget.style.color = c.accent; }}
-                              onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textMid; }}
-                            >
-                              <span style={{ fontSize: 11, lineHeight: 1 }}>{btn.icon}</span>
-                              {btn.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))
-          )}
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: space[4], paddingTop: space[3], borderTop: `1px solid ${c.border}` }}>
-          <Btn variant="ghost" onClick={closePanel}>Close</Btn>
-        </div>
-      </Modal>
-    </>
-  );
-}

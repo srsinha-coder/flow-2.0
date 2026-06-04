@@ -24,7 +24,6 @@ const BAR_COLOR = "#111111";
 const SHIPPED_BAR_COLOR = "#166534";
 const ALPHABETA_BAR_COLOR = "#86efac";
 const BLOCKED_BAR_COLOR = "#fca5a5";
-const priorityColorMap = { P0: () => c.red, P1: () => c.orange, P2: () => c.blue, P3: () => c.textDim };
 
 
 /* ══════════════════════════════════════════════════════════════════
@@ -203,10 +202,6 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                 <div style={{ fontSize: 11, color: c.textDim,
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{p.squad}</div>
               </div>
-              {p.priority && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3,
-                background: p.priority === "P0" ? c.redDim : p.priority === "P1" ? c.orangeDim : p.priority === "P3" ? "rgba(0,0,0,0.05)" : `${c.blue}15`,
-                color: p.priority === "P0" ? c.red : p.priority === "P1" ? c.orange : p.priority === "P3" ? c.textDim : c.blue,
-                fontFamily: typo.monoSm.font, letterSpacing: "0.3px", flexShrink: 0 }}>{p.priority}</span>}
             </div>
           );
         })}
@@ -390,7 +385,6 @@ export default function GanttChart({ projects, today: todayProp, onProjectClick 
                 padding: "3px 8px", borderRadius: layout.radiusXs, marginBottom: 6, textAlign: "center" }}>BLOCKED</div>
             )}
             {[
-              ["Priority", p.priority || "P2"],
               ["Owner", p.owner || "—"],
               ["Squad", p.squad || "—"],
             ].map(([label, val]) => (

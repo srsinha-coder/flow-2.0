@@ -2,17 +2,18 @@
 //
 // A timeframe = { mode, offset, label, sublabel, start, end, year } where
 // start/end are ISO YYYY-MM-DD strings (what every tab filters on).
-//   week    → Monday → Sunday window (offset in weeks; 0 = current week)
-//   month   → a full calendar month (offset in months; 0 = current month)
-//   quarter → a full calendar quarter (offset in quarters; 0 = current quarter)
-//   custom  → a user-picked range (no offset / arrows)
+//   rolling14 → rolling 14-day window ending today (offset in 14-day steps; 0 = last 14 days)
+//   week     → Monday → Sunday window (offset in weeks; 0 = current week)
+//   month    → a full calendar month (offset in months; 0 = current month)
+//   quarter  → a full calendar quarter (offset in quarters; 0 = current quarter)
+//   custom   → a user-picked range (no offset / arrows)
 // offset is negative for the past; right-arrow navigation is disabled at >= 0
 // so the user can never select a future period.
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_FULL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-export const DEFAULT_TIMEFRAME_MODE = "week";
+export const DEFAULT_TIMEFRAME_MODE = "rolling14";
 
 const iso = (d) => {
   const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
@@ -28,6 +29,23 @@ export function todayISO(ref = new Date()) {
 // Build a preset timeframe (week | month | quarter) at `offset` periods from now.
 export function timeframeForMode(mode, offset = 0, ref = new Date()) {
   const today = startOfDay(ref);
+
+  if (mode === "rolling14") {
+    // Rolling 14-day window ending today (inclusive). offset steps the window
+    // back in 14-day blocks; at offset 0 the label reads "Last 14 days", and
+    // navigating back swaps in the explicit date range.
+    const end = new Date(today);
+    end.setDate(today.getDate() + offset * 14);
+    const start = new Date(end);
+    start.setDate(end.getDate() - 13);
+    const range = `${fmtMD(start)} — ${fmtMD(end)}`;
+    return {
+      mode: "rolling14", offset,
+      label: offset === 0 ? "Last 14 days" : range,
+      sublabel: range,
+      start: iso(start), end: iso(end), year: end.getFullYear(),
+    };
+  }
 
   if (mode === "month") {
     const base = new Date(today.getFullYear(), today.getMonth() + offset, 1);
@@ -90,22 +108,11 @@ export function canGoForward(offset) {
   return (offset || 0) < 0;
 }
 
-// Rolling 30-day "recently shipped" window for a timeframe: the 30 days leading
-// up to (and including) the period's END date. Works for every mode — Week's end
-// is its Friday, Month/Quarter end on the calendar boundary, Custom ends on the
-// chosen "To" date. Returns { start, end } as ISO YYYY-MM-DD, or null.
-export function shippedLookbackRange(timeframe) {
-  const endStr = timeframe?.end;
-  if (!endStr) return null;
-  const end = new Date(endStr + "T00:00:00");
-  if (Number.isNaN(end.getTime())) return null;
-  const start = new Date(end);
-  start.setDate(end.getDate() - 30);
-  return { start: iso(start), end: iso(end) };
-}
-
 // Compact label for a preset mode at offset 0 (used for the dropdown rows).
 export function presetSummary(mode, ref = new Date()) {
   const tf = timeframeForMode(mode, 0, ref);
-  return { label: tf.mode === "month" ? tf.sublabel : tf.label, sublabel: tf.sublabel };
+  // month/rolling14 show their date range (sublabel) on the right rather than
+  // the friendly label, which is redundant next to the preset's name.
+  const showSublabel = tf.mode === "month" || tf.mode === "rolling14";
+  return { label: showSublabel ? tf.sublabel : tf.label, sublabel: tf.sublabel };
 }
