@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { c, typo, layout, space, motion } from "../styles/theme";
 import { getActiveTracks } from "../lib/tracks";
-import { NAV } from "./AppShell";
+import { allTagsWithCounts } from "../lib/tags";
 import useDevLabel from "../hooks/useDevLabel";
 import { initialsOf } from "../lib/names";
 
@@ -11,14 +11,13 @@ import { initialsOf } from "../lib/names";
 // ═══════════════════════════════════════════════════════════════
 
 const CATEGORIES = [
-  { key: "all",        label: "All",        icon: "◎" },
-  { key: "people",     label: "People",     icon: "●" },
-  { key: "projects",   label: "Projects",   icon: "◆" },
-  { key: "navigation", label: "Navigate",   icon: "→" },
-  { key: "settings",   label: "Settings",   icon: "⚙" },
+  { key: "all",      label: "All",      icon: "◎" },
+  { key: "projects", label: "Projects", icon: "◆" },
+  { key: "tags",     label: "Tags",     icon: "#" },
+  { key: "people",   label: "People",   icon: "●" },
 ];
 
-const SECTION_ORDER = ["People", "Projects", "Navigation", "Actions", "Settings"];
+const SECTION_ORDER = ["Projects", "Tags", "People"];
 
 function scoreMatch(query, text) {
   if (!text) return 0;
@@ -43,7 +42,7 @@ function multiWordMatch(query, ...fields) {
 }
 
 
-const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNavigate }) => {
+const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNavigate, onApplyTagFilter }) => {
   const devRef = useDevLabel("CommandPalette", "src/components/CommandPalette.jsx", "Universal search palette triggered by Cmd+K for projects, people, and navigation");
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -65,20 +64,6 @@ const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNaviga
   const commands = useMemo(() => {
     const cmds = [];
 
-    // ── Navigation ──
-    NAV.filter(tab => !tab.separator).forEach(tab => {
-      cmds.push({
-        id: `nav-${tab.key}`,
-        label: tab.label.replace("⚙️ ", ""),
-        hint: "",
-        section: "Navigation",
-        cat: "navigation",
-        icon: tab.num != null ? String(tab.num) : tab.key === "settings" ? "⚙" : tab.key === "logs" ? "◉" : tab.key === "rant" ? "🔥" : "·",
-        kbd: tab.num != null ? String(tab.num) : "",
-        action: () => { onTabSwitch(tab.key); onClose(); },
-      });
-    });
-
     // ── Projects (ALL) ──
     if (projects) {
       projects.forEach(p => {
@@ -93,6 +78,19 @@ const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNaviga
         });
       });
     }
+
+    // ── Tags (ALL canonical) — tapping applies the tag as a list filter ──
+    allTagsWithCounts(projects).forEach(({ tag, count }) => {
+      cmds.push({
+        id: `tag-${tag}`,
+        label: tag,
+        hint: `${count} project${count === 1 ? "" : "s"}`,
+        section: "Tags",
+        cat: "tags",
+        icon: "#",
+        action: () => { if (onApplyTagFilter) onApplyTagFilter(tag); onClose(); },
+      });
+    });
 
     // ── People (ALL) ──
     if (people) {
@@ -109,28 +107,8 @@ const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNaviga
       });
     }
 
-    // ── Settings sub-tabs ──
-    const settingsTabs = [
-      { id: "settings-projects", label: "Projects Config", hint: "Manage project data grid", icon: "◆" },
-      { id: "settings-people",   label: "People Config",   hint: "Manage people directory", icon: "●" },
-      { id: "settings-squads",   label: "Squads Config",   hint: "Configure squad definitions", icon: "◫" },
-      { id: "settings-roles",    label: "Roles Config",    hint: "Configure role definitions", icon: "◈" },
-      { id: "settings-audit",    label: "Audit Log",       hint: "View event stream & changes", icon: "◷" },
-    ];
-    settingsTabs.forEach(st => {
-      cmds.push({
-        id: st.id,
-        label: st.label,
-        hint: st.hint,
-        section: "Settings",
-        cat: "settings",
-        icon: st.icon,
-        action: () => { onTabSwitch("settings"); onClose(); },
-      });
-    });
-
     return cmds;
-  }, [projects, people, onTabSwitch, onNavigate, onClose]);
+  }, [projects, people, onNavigate, onApplyTagFilter, onClose]);
 
   // Filter + rank
   const filtered = useMemo(() => {
@@ -258,7 +236,7 @@ const CommandPalette = ({ open, onClose, onTabSwitch, projects, people, onNaviga
             className="flow-cmd-input"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search projects, people, settings..."
+            placeholder="Search projects, tags, people..."
             style={{
               flex: 1, padding: 0, border: "none", background: "transparent",
               fontFamily: typo.bodyLg.font, fontSize: typo.bodyLg.size, fontWeight: 500,

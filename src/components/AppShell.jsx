@@ -9,6 +9,7 @@ import { ANNOUNCEMENTS } from "../data/announcements";
 import { isDevSeedMode, devStore } from "../data/devSeed";
 import { timeAgo } from "../lib/time";
 import { buildNotifications } from "../lib/notifications";
+import { allTagsWithCounts } from "../lib/tags";
 import { timeframeForMode, customTimeframe, presetSummary, todayISO, canGoForward, DEFAULT_TIMEFRAME_MODE } from "../lib/timeframe";
 import FlowLogo from "./FlowLogo";
 import useDevLabel from "../hooks/useDevLabel";
@@ -809,7 +810,7 @@ export function Header({
       allOwners={allOwners || []}
       allSquads={allSquads || []}
       allPeople={allPeople || []}
-      allTags={[...new Set((projects || []).flatMap(p => p.tags || []))].sort()}
+      allTags={allTagsWithCounts(projects).map(t => t.tag)}
     />
     </>
   );
@@ -1300,7 +1301,7 @@ function DrawerFilterGroup({ label, options, value = [], onChange }) {
               </svg>
             )}
           </span>
-          All {label.toLowerCase()}s
+          All {label.toLowerCase()}{label.toLowerCase().endsWith("s") ? "" : "s"}
         </div>
 
         {sorted.map(opt => {

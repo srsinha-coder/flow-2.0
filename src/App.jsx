@@ -368,6 +368,22 @@ function FlowDashboard({ auth }) {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }, [flushDirtyToDB]);
 
+  // Apply a single-tag filter and jump to the full projects list (My Lens off
+  // so every project carrying that tag is shown).
+  const applyTagFilter = useCallback((tag) => {
+    if (!tag) return;
+    const next = { owner: [], squad: [], person: [], track: [], type: [], tags: [tag] };
+    setGlobalFilters(next);
+    setPendingFilters(next);
+    setMyLens(false);
+    setDetailLabel(null);
+    goBackRef.current = null;
+    handleNavigate("projects", null);
+    // Force ProjectsView to remount into the list (it may be showing a detail
+    // via internal state, where navPayload is already null and won't change the key).
+    setProjResetKey(k => k + 1);
+  }, [handleNavigate]);
+
   // ── URL sync ─────────────────────────────────────────────────────
   // Keep the address bar in sync with (activeTab, navPayload) so users can
   // copy a URL and land back on the same page. Use replaceState — the
@@ -676,7 +692,7 @@ function FlowDashboard({ auth }) {
       <main key={activeTab} className="flow-page" style={{ maxWidth: 1440, margin: "0 auto", padding: `${space[7] - 4}px ${space[7]}px ${space[8] + 20}px` }}>
         <ErrorCatcher key={activeTab}>
           {activeTab === "summary" && <SummaryView loading={loading} error={error} projects={projects} people={people} squads={squads} globalFilters={globalFilters} onNavigate={handleNavigate} phaseDurationDefaults={phaseDurationDefaults} myLens={myLens} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} timeframe={timeframe} />}
-          {activeTab === "projects" && <ProjectsView key={navPayload || `proj-${projResetKey}`} projects={projects} setProjects={setProjects} people={people} squads={squads} history={history} personProfile={viewerProfile} isAdmin={isAdmin} permCan={permCan} initialId={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} myLens={myLens} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} timeframe={timeframe} />}
+          {activeTab === "projects" && <ProjectsView key={navPayload || `proj-${projResetKey}`} projects={projects} setProjects={setProjects} people={people} squads={squads} history={history} personProfile={viewerProfile} isAdmin={isAdmin} permCan={permCan} initialId={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} myLens={myLens} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} timeframe={timeframe} onApplyTagFilter={applyTagFilter} />}
 
           {activeTab === "people" && <PeopleDeepDive key={navPayload || "ppl"} loading={loading} error={error} people={people} setPeople={setPeople} projects={projects} history={history} initialPerson={navPayload} onNavigate={handleNavigate} setDetailLabel={setDetailLabel} setGoBack={setGoBack} searchRef={searchRef} globalFilters={globalFilters} myLens={myLens} followedProjects={followedProjects} viewerSquad={viewerProfile?.squad} viewerName={viewerProfile?.name} isAdmin={isAdmin} timeframe={timeframe} />}
           {activeTab === "settings" && <SettingsView squads={squads} setSquads={setSquads} roles={roles} setRoles={setRoles} people={people} setPeople={setPeople} projects={projects} setProjects={setProjects} permConfig={permConfig} setPermConfig={handleSetPermConfig} />}
@@ -698,6 +714,7 @@ function FlowDashboard({ auth }) {
         projects={projects}
         people={people}
         onNavigate={handleNavigate}
+        onApplyTagFilter={applyTagFilter}
       />
 
       {showHints && <ShortcutHintBar activeTab={activeTab} hasDetail={!!detailLabel} isLocked={isLocked} visible={showHints} />}

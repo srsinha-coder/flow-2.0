@@ -18,6 +18,7 @@ import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB } from "../lib/mutations";
 import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, pauseAllTracks, getReleaseMilestone } from "../lib/tracks";
+import { buildTagCanon, canonTag, canonTags, allTagsWithCounts, projectHasTag, tagKey } from "../lib/tags";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
@@ -272,11 +273,12 @@ export default function ProjectsView({
   suppressBackRef,
   projectLinks, setProjectLinks, phaseDurationDefaults,
   myLens = false, followedProjects = [], toggleFollowProject,
-  timeframe,
+  timeframe, onApplyTagFilter,
 }) {
   const can = permCan || defaultCan;
   const devRef = useDevLabel('ProjectsView', 'src/views/ProjectsView.jsx', 'Project registry table with deep dive and Gantt chart');
   const projects = useMemo(() => rawProjects.map(ensureStatus), [rawProjects]);
+  const tagCanon = useMemo(() => buildTagCanon(projects), [projects]);
   const today = new Date().toISOString().split('T')[0];
   const metrics = useMemo(() => deriveProjectMetrics(projects, history, today), [projects, history, today]);
 
@@ -479,7 +481,7 @@ export default function ProjectsView({
       list = list.filter(p => globalFilters.track.some(t => (metrics[p.id]?.activeTracks || []).includes(t)));
     }
     if ((globalFilters.type || []).length > 0) list = list.filter(p => globalFilters.type.includes(p.type));
-    if ((globalFilters.tags || []).length > 0) list = list.filter(p => globalFilters.tags.some(tg => (p.tags || []).includes(tg)));
+    if ((globalFilters.tags || []).length > 0) list = list.filter(p => globalFilters.tags.some(tg => projectHasTag(p.tags, tg, tagCanon)));
     // My Lens: show only followed projects (auto-followed squad + explicit follows)
     if (myLens) {
       list = list.filter(p => followedProjects.includes(p.id));
@@ -497,7 +499,7 @@ export default function ProjectsView({
       });
     }
     return list;
-  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe]);
+  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe, tagCanon]);
 
   // ── Tab splits ──
   // When a search query is active, bypass the tab filter so results surface
@@ -550,23 +552,20 @@ export default function ProjectsView({
     return m;
   }, [people]);
   const viewerId = personProfile?.id ?? null;
-  const crossSquadProjects = useMemo(() => {
-    if (!myLens || !viewerSquad) return [];
-    const result = [];
+  // Collaborating squads per project = squads of the owner/members other than
+  // the project's own squad. Used to flag cross-squad work inline (list squad
+  // column badge + detail-page "Collaborating Squads"). Not lens-gated.
+  const collabSquadsByProject = useMemo(() => {
+    const map = {};
     for (const p of projects) {
       const memberIds = metrics[p.id]?.teamMembers || [];
-      // Only the viewer's own projects (owner or team member).
-      const viewerOnProject = (viewerId != null && (p.owner_id === viewerId || memberIds.includes(viewerId)))
-        || (personProfile?.name && p.owner === personProfile.name);
-      if (!viewerOnProject) continue;
       const memberSquads = memberIds.map(id => squadByPersonId[id]).filter(Boolean);
       const ownerSquad = p.owner ? squadByPersonName[p.owner] : null;
-      // Collab = squads of people on the project other than the project's own squad.
       const collab = [...new Set([...memberSquads, ownerSquad].filter(sq => sq && sq !== p.squad))];
-      if (collab.length > 0) result.push({ proj: p, collab });
+      if (collab.length > 0) map[p.id] = collab;
     }
-    return result.sort((a, b) => new Date(b.proj.lastActivityAt || 0) - new Date(a.proj.lastActivityAt || 0));
-  }, [myLens, viewerSquad, viewerId, projects, metrics, squadByPersonId, squadByPersonName, personProfile]);
+    return map;
+  }, [projects, metrics, squadByPersonId, squadByPersonName]);
 
   // ── KPI summary (from filtered data) ──
   // Risk is computed once in `deriveProjectMetrics`; this section
@@ -739,7 +738,7 @@ export default function ProjectsView({
   if (selectedProject) {
     const proj = projects.find(p => p.id === selectedProject);
     if (!proj) return <EmptyState icon="🔍" title="Project not found" message="This project may have been removed." action="Back to overview" onAction={goBackToList} />;
-    return <ProjectDeepDive proj={proj} metrics={metrics[proj.id]} history={history} projects={projects} setProjects={setProjects} people={people} squads={squads} personProfile={personProfile} isAdmin={isAdmin} can={can} onNavigate={onNavigate} goBack={goBackToList} pc={pc} pcMid={pcMid} pcDim={pcDim} sc={sc} tc={tc} ec={ec} today={today} leaving={detailLeaving} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} />;
+    return <ProjectDeepDive proj={proj} metrics={metrics[proj.id]} history={history} projects={projects} setProjects={setProjects} people={people} squads={squads} personProfile={personProfile} isAdmin={isAdmin} can={can} onNavigate={onNavigate} goBack={goBackToList} pc={pc} pcMid={pcMid} pcDim={pcDim} sc={sc} tc={tc} ec={ec} today={today} leaving={detailLeaving} suppressBackRef={suppressBackRef} projectLinks={projectLinks} setProjectLinks={setProjectLinks} phaseDurationDefaults={phaseDurationDefaults} followedProjects={followedProjects} toggleFollowProject={toggleFollowProject} tagCanon={tagCanon} onApplyTagFilter={onApplyTagFilter} />;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1649,7 +1648,19 @@ export default function ProjectsView({
                               transition: `opacity ${motion.fast.duration} ${motion.fast.easing}`,
                             }}
                           >{isPinned ? "📌" : "📌"}</button>
-                          {proj.squad}
+                          <span>{proj.squad}</span>
+                          {(collabSquadsByProject[proj.id] || []).length > 0 && (
+                            <span
+                              title={`Cross-squad: ${collabSquadsByProject[proj.id].join(", ")}`}
+                              style={{
+                                flexShrink: 0, display: "inline-flex", alignItems: "center",
+                                padding: "1px 5px", borderRadius: layout.radiusPill,
+                                background: c.cyanDim, border: `1px solid ${c.cyan}30`,
+                                fontFamily: typo.monoSm.font, fontSize: 9, fontWeight: 700,
+                                letterSpacing: "0.02em", color: c.cyan, lineHeight: 1.4,
+                              }}
+                            >+{collabSquadsByProject[proj.id].length}</span>
+                          )}
                         </div>
                       </td>
 
@@ -1893,137 +1904,6 @@ export default function ProjectsView({
         </TableShell>
       )}
 
-      {/* ═══ CROSS SQUAD COLLABORATION — My Lens, users with a squad ═══ */}
-      {crossSquadProjects.length > 0 && (
-        <div style={{ marginTop: space[7] }}>
-          <SectionHead title="Cross Squad Collaboration" />
-          <TableShell minWidth={820}>
-            <thead>
-              <tr>
-                <Th col="squad" style={{ position: "sticky", left: 0, top: "var(--flow-sticky-top, 0px)", background: "rgba(232, 232, 232, 0.72)", backdropFilter: "blur(16px) saturate(1.3)", WebkitBackdropFilter: "blur(16px) saturate(1.3)", zIndex: 11, minWidth: 70 }}>Squad</Th>
-                <Th col="project" style={{ minWidth: 160 }}>Project</Th>
-                <Th col="owner" style={{ minWidth: 80 }}>Owner</Th>
-                <Th col="tracks" style={{ minWidth: 90, textAlign: "center" }}>Tracks</Th>
-                <Th col="collab" style={{ minWidth: 120 }}>Collab</Th>
-                <Th col="last" style={{ minWidth: 80, textAlign: "center" }}>Updated</Th>
-                <Th col="timeline" style={{ minWidth: colWidths.timeline?.min || 110, textAlign: "center" }}>Timeline</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {crossSquadProjects.map(({ proj, collab }) => {
-                const m = metrics[proj.id] || {};
-                const isDimmed = proj.status === "deprioritized";
-                const isUpcoming = proj.status === "upcoming";
-                const isShipped = proj.status === "shipped";
-                const hasReleasedTrack = (m.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
-                const isBlockedProj = proj.status === "blocked" || m.isBlocked;
-                const isBlockedOrOverdue = isBlockedProj || m.overdue;
-                const leftBarColor = (isShipped || hasReleasedTrack) ? c.green : isBlockedOrOverdue ? c.red : null;
-                const cellBorder = "1px solid rgba(0,0,0,0.03)";
-                const rowBg = c.surface;
-                return (
-                  <tr key={proj.id}
-                    onClick={() => openProject(proj.id)}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.012)"; e.currentTarget.style.transform = "scale(1.008)"; e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.07)"; e.currentTarget.style.zIndex = "2"; e.currentTarget.style.position = "relative"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.zIndex = "auto"; e.currentTarget.style.position = "static"; }}
-                    style={{
-                      cursor: "pointer", background: rowBg,
-                      opacity: isDimmed ? 0.5 : 1, filter: isDimmed ? "grayscale(0.6)" : "none",
-                      borderLeft: leftBarColor ? `4px solid ${leftBarColor}` : "4px solid transparent",
-                      transition: `background ${motion.fast.duration} ${motion.fast.easing}, opacity ${motion.fast.duration} ${motion.fast.easing}, transform ${motion.fast.duration} ${motion.fast.easing}, box-shadow ${motion.fast.duration} ${motion.fast.easing}`,
-                    }}
-                  >
-                    {/* Squad — sticky left */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 500, color: isDimmed ? c.textGhost : c.textMid, borderBottom: cellBorder, position: "sticky", left: 0, background: rowBg, zIndex: 1 }}>{proj.squad}</td>
-
-                    {/* Project — ID + Name + status labels */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, borderBottom: cellBorder }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                        <span style={{ fontFamily: typo.monoMd.font, fontSize: 12, fontWeight: 700, letterSpacing: "0.02em", color: ec.project, flexShrink: 0 }}>{proj.id}</span>
-                        <span style={{ fontFamily: typo.bodyMd.font, fontSize: 14, fontWeight: 600, color: c.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{proj.name}</span>
-                        {m.isBlocked && <Tag color={c.red} bg={c.redDim} style={{ flexShrink: 0 }}>BLOCKED</Tag>}
-                        {proj.status === "deprioritized" && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>DEPRIORITIZED</Tag>}
-                        {isUpcoming && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>UPCOMING</Tag>}
-                        {SHIPPED_PHASES.includes(proj.phase) && <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}>SHIPPED</Tag>}
-                      </div>
-                    </td>
-
-                    {/* Owner */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, borderBottom: cellBorder, fontFamily: typo.bodyMd.font, fontSize: 14, fontWeight: 500, color: proj.owner ? c.text : c.textDim, whiteSpace: "nowrap" }}>{proj.owner || "Unassigned"}</td>
-
-                    {/* Active Tracks */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, textAlign: "center", borderBottom: cellBorder }}>
-                      {isUpcoming ? <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
-                       : isShipped ? (
-                        <span style={{ padding: "1px 5px", borderRadius: layout.radiusXs, background: `${c.green}15`, color: c.green, fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>Shipped</span>
-                      ) : (() => {
-                        const active = m.activeTracks || getActiveTracks(proj);
-                        if (active.length === 0) return <span style={{ color: c.textDim, fontSize: 11 }}>—</span>;
-                        const releaseStage = active.includes("Beta") ? "Beta" : active.includes("Alpha") ? "Alpha" : null;
-                        const otherTracks = releaseStage ? active.filter(t => t !== "Alpha" && t !== "Beta") : active;
-                        return (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "center" }}>
-                            {releaseStage && <span style={{ padding: "1px 6px", borderRadius: layout.radiusXs, background: `${c.cyan}18`, color: c.cyan, fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{releaseStage}</span>}
-                            {otherTracks.map(t => (
-                              <span key={t} style={{ padding: "1px 5px", borderRadius: layout.radiusXs, background: `${pc[t] || c.textDim}15`, color: pc[t] || c.textDim, fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{t}</span>
-                            ))}
-                          </span>
-                        );
-                      })()}
-                    </td>
-
-                    {/* Collab — squads other than the viewer's */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, borderBottom: cellBorder }}>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                        {collab.map(sq => (
-                          <span key={sq} style={{ display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: layout.radiusPill, background: c.cyanDim, border: `1px solid ${c.cyan}25`, fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, color: c.cyan }}>{sq}</span>
-                        ))}
-                      </div>
-                    </td>
-
-                    {/* Updated */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, textAlign: "center", borderBottom: cellBorder, fontFamily: typo.bodySm.font, fontSize: 12, color: !proj.lastActivityAt ? c.textDim : isStale(proj.lastActivityAt) ? c.red : c.textMid, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>
-                      <span title={proj.lastActivityAt ? fmtAbsolute(proj.lastActivityAt) : "No activity yet"}>{proj.lastActivityAt ? timeAgo(proj.lastActivityAt) : "—"}</span>
-                    </td>
-
-                    {/* Timeline */}
-                    <td style={{ padding: `${space[3]}px ${space[4]}px`, borderBottom: cellBorder }}>
-                      {isUpcoming ? (
-                        proj.tentativeStartDate ? (
-                          <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textDim }}>Starts {fmtDate(proj.tentativeStartDate)}</span>
-                        ) : <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
-                      ) : (() => {
-                        const milestone = getReleaseMilestone(proj);
-                        const milestoneEnd = (isShipped && milestone?.date) ? milestone.date.slice(0, 10) : null;
-                        const displayEnd = milestoneEnd || proj.endDate;
-                        const endHighlight = !!milestoneEnd;
-                        const allocated = daysBetween(proj.startDate, displayEnd);
-                        const elapsed = Math.max(0, Math.min(daysBetween(proj.startDate, today), allocated));
-                        const pct = allocated > 0 ? Math.round((elapsed / allocated) * 100) : 0;
-                        return (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "center" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 4, fontVariantNumeric: "tabular-nums" }}>
-                              <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textMid }}>{fmtDate(proj.startDate)}</span>
-                              <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textDim }}>→</span>
-                              <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: endHighlight ? (isShipped ? c.green : c.cyan) : c.textMid }}>{fmtDate(displayEnd)}</span>
-                            </div>
-                            {!isBlockedProj && (
-                              <div style={{ height: 3, borderRadius: 2, background: c.border, overflow: "hidden", width: "100%" }}>
-                                <div style={{ height: "100%", borderRadius: 2, width: `${Math.min(pct, 100)}%`, background: isShipped ? c.green : m.overdue ? c.red : c.text }} />
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </TableShell>
-        </div>
-      )}
-
       <div style={{ flexShrink: 0, height: space[8] }} />
       </div>
 
@@ -2212,16 +2092,32 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   const [endDate, setEndDate] = useState(initToday);
   const [tags, setTags] = useState([]);
   const [tagInput, setTagInput] = useState("");
+  const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const PROJECT_TYPES = ["New Feature", "Bug Fix", "Enhancement", "Tech"];
 
+  // Canonical pool of every tag already used across projects (case + plural merged).
+  const createTagCanon = useMemo(() => buildTagCanon(projects), [projects]);
+  const tagPool = useMemo(() => allTagsWithCounts(projects).map(t => t.tag), [projects]);
+
   const addTag = (raw) => {
-    const v = (raw || "").trim().replace(/,+$/, "").trim();
-    if (!v || tags.some(t => t.toLowerCase() === v.toLowerCase()) || tags.length >= 8) { setTagInput(""); return; }
-    setTags(prev => [...prev, v]);
+    const ct = canonTag(raw, createTagCanon);
+    if (!ct || tags.some(t => tagKey(t) === tagKey(ct)) || tags.length >= 8) { setTagInput(""); return; }
+    setTags(prev => [...prev, ct]);
     setTagInput("");
   };
+
+  // Existing tags not yet added, with ones matching the current input first.
+  const tagSuggestions = useMemo(() => {
+    const q = tagInput.trim().toUpperCase();
+    const used = new Set(tags.map(tagKey));
+    const avail = tagPool.filter(t => !used.has(tagKey(t)));
+    if (!q) return avail.slice(0, 12);
+    const matches = avail.filter(t => t.toUpperCase().includes(q));
+    const rank = (t) => (t.toUpperCase().startsWith(q) ? 0 : 1);
+    return matches.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).slice(0, 12);
+  }, [tagInput, tagPool, tags]);
 
   const allSquads = squads && squads.length
     ? [...squads].sort()
@@ -2370,7 +2266,7 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
           </div>
 
           {/* Tags — custom, for filtering & search */}
-          <div>
+          <div style={{ position: "relative" }}>
             <div style={fieldLabel}>Tags <span style={{ color: c.textDim, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— optional, for filtering &amp; search</span></div>
             <div
               onClick={() => { const el = document.getElementById("create-tag-input"); el && el.focus(); }}
@@ -2398,11 +2294,13 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
                 id="create-tag-input"
                 value={tagInput}
                 onChange={e => setTagInput(e.target.value)}
+                onFocus={() => setTagDropdownOpen(true)}
                 onKeyDown={e => {
                   if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(tagInput); }
                   else if (e.key === "Backspace" && !tagInput && tags.length) { setTags(prev => prev.slice(0, -1)); }
+                  else if (e.key === "Escape") { setTagDropdownOpen(false); }
                 }}
-                onBlur={() => { if (tagInput.trim()) addTag(tagInput); }}
+                onBlur={() => { setTimeout(() => setTagDropdownOpen(false), 120); if (tagInput.trim()) addTag(tagInput); }}
                 placeholder={tags.length === 0 ? "Add a tag, press Enter…" : ""}
                 maxLength={24}
                 style={{
@@ -2412,6 +2310,34 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
                 }}
               />
             </div>
+
+            {/* Existing-tag suggestions — matching first, click to add */}
+            {tagDropdownOpen && tagSuggestions.length > 0 && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50,
+                marginTop: 4, padding: space[1],
+                background: c.surfaceSolid, border: `1px solid ${c.border}`,
+                borderRadius: layout.radiusSm, boxShadow: c.shadowElevated,
+                maxHeight: 200, overflowY: "auto",
+                display: "flex", flexWrap: "wrap", gap: 4,
+              }}>
+                {tagSuggestions.map(tag => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onMouseDown={e => { e.preventDefault(); addTag(tag); }}
+                    style={{
+                      display: "inline-flex", alignItems: "center", cursor: "pointer",
+                      padding: "4px 9px", borderRadius: layout.radiusPill,
+                      background: c.surfaceAlt, border: `1px solid ${c.border}`,
+                      fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 500, color: c.textMid,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = c.accentDim; e.currentTarget.style.color = c.accent; e.currentTarget.style.borderColor = c.accent; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.color = c.textMid; e.currentTarget.style.borderColor = c.border; }}
+                  >#{tag}</button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Owner + Squad */}
@@ -2546,9 +2472,17 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
    PROJECT DEEP DIVE — PeopleDeepDive structural model
    De-cluttered: hero → history → ledger → supporting metadata
    ══════════════════════════════════════════════════════════════════ */
-function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, people, squads, personProfile, isAdmin = false, can: canProp, onNavigate, goBack, pc, pcMid, pcDim, sc, tc, ec, today, leaving = false, suppressBackRef, projectLinks = [], setProjectLinks, phaseDurationDefaults, followedProjects = [], toggleFollowProject }) {
+function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, people, squads, personProfile, isAdmin = false, can: canProp, onNavigate, goBack, pc, pcMid, pcDim, sc, tc, ec, today, leaving = false, suppressBackRef, projectLinks = [], setProjectLinks, phaseDurationDefaults, followedProjects = [], toggleFollowProject, tagCanon, onApplyTagFilter }) {
   const can = canProp || defaultCan;
   useDevLabel('ProjectDeepDive', 'src/views/ProjectsView.jsx', 'Full project detail view with hero telemetry, timeline, and history');
+  // Collaborating squads = squads of the owner/members other than the project's own squad.
+  const collabSquads = useMemo(() => {
+    const squadOf = {};
+    (people || []).forEach(pp => { if (pp.id != null) squadOf[`#${pp.id}`] = pp.squad || null; if (pp.name) squadOf[pp.name] = pp.squad || null; });
+    const memberSquads = (m?.teamMembers || []).map(id => squadOf[`#${id}`]).filter(Boolean);
+    const ownerSquad = proj.owner ? squadOf[proj.owner] : null;
+    return [...new Set([...memberSquads, ownerSquad].filter(sq => sq && sq !== proj.squad))];
+  }, [people, m, proj.owner, proj.squad]);
   const [editing, setEditingRaw] = useState(false);
   const [editName, setEditName] = useState(proj.name);
   const [editOwner, setEditOwner] = useState(proj.owner);
@@ -2718,6 +2652,38 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   }, [proj.id]);
 
   const projRole = getProjectRole(personProfile?.id, proj, memberIds, isAdmin);
+
+  // ── Inline tag editing on the detail page ──
+  const canEditTags = can.editProject(projRole);
+  const [addingTag, setAddingTag] = useState(false);
+  const [tagDraft, setTagDraft] = useState("");
+  const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
+  const currentTags = useMemo(() => canonTags(proj.tags, tagCanon), [proj.tags, tagCanon]);
+  const tagPool = useMemo(() => allTagsWithCounts(projects).map(t => t.tag), [projects]);
+  const tagSuggestions = useMemo(() => {
+    const q = tagDraft.trim().toUpperCase();
+    const used = new Set(currentTags.map(tagKey));
+    const avail = tagPool.filter(t => !used.has(tagKey(t)));
+    if (!q) return avail.slice(0, 12);
+    const matches = avail.filter(t => t.toUpperCase().includes(q));
+    const rank = (t) => (t.toUpperCase().startsWith(q) ? 0 : 1);
+    return matches.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).slice(0, 12);
+  }, [tagDraft, tagPool, currentTags]);
+
+  const addProjectTag = (raw) => {
+    const ct = canonTag(raw, tagCanon);
+    setTagDraft("");
+    if (!ct || currentTags.length >= 8 || currentTags.some(t => tagKey(t) === tagKey(ct))) return;
+    const nextTags = [...(proj.tags || []), ct];
+    setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, tags: nextTags } : p));
+    recordAction("project_tag_added", { tag: ct }, `Tagged #${ct}`);
+  };
+  const removeProjectTag = (tag) => {
+    const k = tagKey(tag);
+    const nextTags = (proj.tags || []).filter(t => tagKey(canonTag(t, tagCanon)) !== k);
+    setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, tags: nextTags.length ? nextTags : null } : p));
+    recordAction("project_tag_removed", { tag }, `Removed #${tag}`);
+  };
 
   // Re-clone the project's tracks into fresh references so React re-renders
   // after a mutation has updated periods in place (dev-seed mutates the live object).
@@ -3394,17 +3360,104 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
               }}>{proj.description}</div>
             )}
 
-            {/* Tags */}
-            {Array.isArray(proj.tags) && proj.tags.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: space[1] + 2, marginTop: space[2] }}>
-                {proj.tags.map(tag => (
+            {/* Tags — click to filter; owners/admins can add & remove */}
+            {(canEditTags || currentTags.length > 0) && (
+              <div style={{ position: "relative", display: "flex", flexWrap: "wrap", alignItems: "center", gap: space[1] + 2, marginTop: space[2] }}>
+                {currentTags.map(tag => (
                   <span key={tag} style={{
-                    display: "inline-flex", alignItems: "center",
-                    padding: "3px 9px", borderRadius: layout.radiusPill,
+                    display: "inline-flex", alignItems: "center", gap: 2,
+                    padding: `3px 6px 3px 9px`, borderRadius: layout.radiusPill,
                     background: c.surfaceAlt, border: `1px solid ${c.border}`,
-                    fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 500, color: c.textMid,
-                  }}>#{tag}</span>
+                  }}>
+                    <button
+                      type="button"
+                      title={`Filter projects by #${tag}`}
+                      onClick={() => onApplyTagFilter && onApplyTagFilter(tag)}
+                      style={{
+                        background: "none", border: "none", padding: 0, cursor: "pointer",
+                        fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 500, color: c.textMid,
+                        transition: `color ${motion.fast.duration} ${motion.fast.easing}`,
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.color = c.accent; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = c.textMid; }}
+                    >#{tag}</button>
+                    {canEditTags && (
+                      <button
+                        type="button"
+                        title={`Remove #${tag}`}
+                        onClick={(e) => { e.stopPropagation(); removeProjectTag(tag); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", padding: "0 1px", lineHeight: 1, color: c.textDim, fontSize: 13, fontWeight: 400 }}
+                        onMouseEnter={e => { e.currentTarget.style.color = c.red; }}
+                        onMouseLeave={e => { e.currentTarget.style.color = c.textDim; }}
+                      >&times;</button>
+                    )}
+                  </span>
                 ))}
+
+                {/* + Tag affordance */}
+                {canEditTags && !addingTag && (
+                  <button
+                    type="button"
+                    onClick={() => { setAddingTag(true); setTagDropdownOpen(true); }}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 3, cursor: "pointer",
+                      padding: "3px 9px", borderRadius: layout.radiusPill,
+                      background: "transparent", border: `1px dashed ${c.border}`,
+                      fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600, color: c.textDim,
+                      transition: `border-color ${motion.fast.duration} ${motion.fast.easing}, color ${motion.fast.duration} ${motion.fast.easing}`,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = c.accent; e.currentTarget.style.color = c.accent; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.color = c.textDim; }}
+                  >+ Tag</button>
+                )}
+
+                {/* Inline add input + suggestions */}
+                {canEditTags && addingTag && (
+                  <span style={{ position: "relative", display: "inline-flex" }}>
+                    <input
+                      autoFocus
+                      value={tagDraft}
+                      onChange={e => setTagDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addProjectTag(tagDraft); }
+                        else if (e.key === "Escape") { setTagDraft(""); setAddingTag(false); setTagDropdownOpen(false); }
+                      }}
+                      onBlur={() => { setTimeout(() => { setTagDropdownOpen(false); setAddingTag(false); }, 140); if (tagDraft.trim()) addProjectTag(tagDraft); }}
+                      placeholder="Add tag…"
+                      maxLength={24}
+                      style={{
+                        width: 110, height: 24, padding: `0 8px`, borderRadius: layout.radiusPill,
+                        border: `1px solid ${c.accent}`, outline: "none", background: c.surfaceSolid,
+                        fontFamily: typo.bodySm.font, fontSize: 11, color: c.text,
+                      }}
+                    />
+                    {tagDropdownOpen && tagSuggestions.length > 0 && (
+                      <div style={{
+                        position: "absolute", top: "100%", left: 0, zIndex: 50, marginTop: 4, padding: space[1],
+                        minWidth: 160, maxWidth: 280, maxHeight: 200, overflowY: "auto",
+                        background: c.surfaceSolid, border: `1px solid ${c.border}`,
+                        borderRadius: layout.radiusSm, boxShadow: c.shadowElevated,
+                        display: "flex", flexWrap: "wrap", gap: 4,
+                      }}>
+                        {tagSuggestions.map(tag => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onMouseDown={e => { e.preventDefault(); addProjectTag(tag); }}
+                            style={{
+                              display: "inline-flex", alignItems: "center", cursor: "pointer",
+                              padding: "3px 9px", borderRadius: layout.radiusPill,
+                              background: c.surfaceAlt, border: `1px solid ${c.border}`,
+                              fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 500, color: c.textMid,
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = c.accentDim; e.currentTarget.style.color = c.accent; e.currentTarget.style.borderColor = c.accent; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.color = c.textMid; e.currentTarget.style.borderColor = c.border; }}
+                          >#{tag}</button>
+                        ))}
+                      </div>
+                    )}
+                  </span>
+                )}
               </div>
             )}
 
@@ -3894,6 +3947,25 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
               canManageMembers={can.addMembers(projRole)}
               canRemoveMembers={can.removeMembers(projRole)}
             />
+            {collabSquads.length > 0 && (
+              <div style={{ marginTop: space[4] }}>
+                <span style={{
+                  fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
+                  letterSpacing: "0.1em", textTransform: "uppercase", color: c.textDim,
+                  display: "block", marginBottom: space[2],
+                }}>Collaborating Squads</span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {collabSquads.map(sq => (
+                    <span key={sq} style={{
+                      display: "inline-flex", alignItems: "center", padding: "3px 10px",
+                      borderRadius: layout.radiusPill, background: c.cyanDim,
+                      border: `1px solid ${c.cyan}25`, fontFamily: typo.bodySm.font,
+                      fontSize: 11, fontWeight: 600, color: c.cyan,
+                    }}>{sq}</span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

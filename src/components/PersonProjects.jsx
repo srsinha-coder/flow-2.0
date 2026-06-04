@@ -12,10 +12,26 @@ import { getActiveTracks, isShipped, isInFlight } from "../lib/tracks";
 import usePersonActivity from "../hooks/usePersonActivity";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 
+// Right-side status badge — Shipped / Blocked / Deprioritized / Upcoming
+function statusBadge(proj) {
+  if (isShipped(proj)) return { text: "Shipped", color: c.green };
+  if (proj.status === "blocked") return { text: "Blocked", color: c.red };
+  if (proj.status === "deprioritized") return { text: "Deprioritized", color: c.textDim };
+  if (proj.status === "upcoming") return { text: "Upcoming", color: c.textDim };
+  return null;
+}
+
+const TODAY_STR = new Date().toISOString().slice(0, 10);
+function isOverdue(proj) {
+  return !isShipped(proj)
+    && proj.status !== "deprioritized" && proj.status !== "upcoming"
+    && !!proj.endDate && proj.endDate < TODAY_STR;
+}
+
 function ProjectRow({ proj, onNavigate, label }) {
   const stale = isStale(proj.lastActivityAt);
-  const active = getActiveTracks(proj);
-  const pc = getPhaseColors();
+  const badge = statusBadge(proj);
+  const overdue = isOverdue(proj);
 
   return (
     <button
@@ -39,7 +55,7 @@ function ProjectRow({ proj, onNavigate, label }) {
         minWidth: 36, flexShrink: 0,
       }}>{proj.id}</span>
 
-      {/* Name + owner label + tracks sub-line */}
+      {/* Name + owner label + overdue label */}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
         <div style={{ display: "flex", alignItems: "center", gap: space[2], minWidth: 0 }}>
           <span style={{
@@ -54,12 +70,20 @@ function ProjectRow({ proj, onNavigate, label }) {
               textTransform: "uppercase", flexShrink: 0,
             }}>{label}</span>
           )}
+          {overdue && (
+            <span style={{
+              fontFamily: mono, fontSize: 10, fontWeight: 700,
+              color: c.red, letterSpacing: "0.08em",
+              background: c.redDim, padding: `1px 5px`, borderRadius: layout.radiusXs,
+              textTransform: "uppercase", flexShrink: 0,
+            }}>Overdue</span>
+          )}
         </div>
       </div>
 
       {/* Status badge (right side) */}
-      {isShipped(proj) && (
-        <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: c.green, textTransform: "uppercase", flexShrink: 0 }}>Shipped</span>
+      {badge && (
+        <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: badge.color, textTransform: "uppercase", flexShrink: 0 }}>{badge.text}</span>
       )}
 
       {/* Last activity */}
@@ -140,8 +164,40 @@ function SectionTitle({ title, count }) {
   );
 }
 
+// Major group divider — "Contributions" / "Previous Projects" with a rule.
+function GroupHeader({ title, subtitle }) {
+  return (
+    <div style={{ marginBottom: space[4] }}>
+      <div style={{ display: "flex", alignItems: "center", gap: space[3] }}>
+        <span style={{
+          fontFamily: mono, fontSize: 13, fontWeight: 700,
+          letterSpacing: "0.08em", textTransform: "uppercase", color: c.text,
+          whiteSpace: "nowrap",
+        }}>{title}</span>
+        <div style={{ flex: 1, height: 1, background: c.border }} />
+      </div>
+      {subtitle && (
+        <div style={{
+          marginTop: 4, fontFamily: body, fontSize: 12, color: c.textDim,
+        }}>{subtitle}</div>
+      )}
+    </div>
+  );
+}
 
-export default function PersonProjects({ person, projects, onProjectNavigate }) {
+
+// True when a project's date range overlaps the selected timeframe.
+function overlapsTimeframe(p, timeframe) {
+  if (!timeframe?.start || !timeframe?.end) return true;
+  const pStart = p.startDate || p.tentativeStartDate || p.createdAt?.slice(0, 10);
+  const pEnd = p.endDate || p.shipped_at?.slice(0, 10);
+  if (!pStart) return true; // no dates at all → always include
+  const startsBeforeEnd = pStart <= timeframe.end;
+  const endsAfterStart = pEnd ? pEnd >= timeframe.start : true; // no end = still running
+  return startsBeforeEnd && endsAfterStart;
+}
+
+export default function PersonProjects({ person, projects, onProjectNavigate, timeframe }) {
   const personId = person?.id;
   const { memberships, comments, loading, error } = usePersonActivity(personId);
 
@@ -151,9 +207,10 @@ export default function PersonProjects({ person, projects, onProjectNavigate }) 
     return m;
   }, [projects]);
 
-  // Merge owns + member-of into a single deduplicated list, then split by phase
-  const { inFlight, shipped } = useMemo(() => {
-    if (!personId) return { inFlight: [], shipped: [] };
+  // Merge owns + member-of, then split by timeframe and status into buckets.
+  const { inFlight, shipped, others, upcoming, previous } = useMemo(() => {
+    const empty = { inFlight: [], shipped: [], others: [], upcoming: [], previous: [] };
+    if (!personId) return empty;
     const seen = new Set();
     const all = [];
 
@@ -177,16 +234,41 @@ export default function PersonProjects({ person, projects, onProjectNavigate }) 
     });
 
     const sortOwnerFirst = (a, b) => {
-      // Owner projects first, then by activity
       if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
       return new Date(b.lastActivityAt || 0) - new Date(a.lastActivityAt || 0);
     };
 
+    // Upcoming gets its own top-level section (regardless of timeframe).
+    const upcomingProjs = all.filter(p => p.status === "upcoming").sort(sortOwnerFirst);
+    const rest = all.filter(p => p.status !== "upcoming");
+
+    // In-range vs outside the selected timeframe (upcoming already removed)
+    const inRange = rest.filter(p => overlapsTimeframe(p, timeframe));
+    const outRange = rest.filter(p => !overlapsTimeframe(p, timeframe));
+
+    const isShippedP = (p) => isShipped(p) || p.status === "shipped";
+    const isOtherP = (p) => p.status === "blocked" || p.status === "deprioritized";
+
     return {
-      inFlight: all.filter(p => isInFlight(p) || p.status === "blocked").sort(sortOwnerFirst),
-      shipped: all.filter(isShipped).sort(sortOwnerFirst),
+      // In Flight = active work that isn't shipped or in the Others bucket
+      inFlight: inRange.filter(p => !isShippedP(p) && !isOtherP(p)).sort(sortOwnerFirst),
+      shipped: inRange.filter(isShippedP).sort(sortOwnerFirst),
+      // Others = blocked / deprioritized (that aren't shipped)
+      others: inRange.filter(p => !isShippedP(p) && isOtherP(p)).sort(sortOwnerFirst),
+      upcoming: upcomingProjs,
+      // Previous = everything outside the selected timeframe
+      previous: outRange.sort(sortOwnerFirst),
     };
-  }, [projects, memberships, projectsById, personId]);
+  }, [projects, memberships, projectsById, personId, timeframe]);
+
+  // Recent activity, scoped to the selected timeframe.
+  const scopedComments = useMemo(() => {
+    if (!timeframe?.start || !timeframe?.end) return comments || [];
+    return (comments || []).filter(cmt => {
+      const d = (cmt.created_at || "").slice(0, 10);
+      return d && d >= timeframe.start && d <= timeframe.end;
+    });
+  }, [comments, timeframe]);
 
   if (!personId) {
     return (
@@ -221,73 +303,102 @@ export default function PersonProjects({ person, projects, onProjectNavigate }) 
     );
   }
 
+  const emptyBox = (text) => (
+    <div style={{
+      padding: space[4], borderRadius: layout.radiusSm,
+      background: c.surface, border: `1px dashed ${c.border}`,
+      color: c.textDim, fontSize: 13, fontFamily: body, textAlign: "center",
+    }}>{text}</div>
+  );
+
+  const tfLabel = timeframe?.label || "All time";
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: space[6] }}>
-      {/* ── In Flight Projects ─────────────────────────────────── */}
+    <div style={{ display: "flex", flexDirection: "column", gap: space[7] }}>
+
+      {/* ═══════════ CONTRIBUTIONS ═══════════ */}
       <div>
-        <SectionTitle title="In Flight" count={inFlight.length} />
-        {inFlight.length === 0 ? (
-          <div style={{
-            padding: space[4], borderRadius: layout.radiusSm,
-            background: c.surface, border: `1px dashed ${c.border}`,
-            color: c.textDim, fontSize: 13, fontFamily: body, textAlign: "center",
-          }}>
-            No in-flight projects right now.
+        <GroupHeader title="Contributions" subtitle={`Recent Projects · Timeline: ${tfLabel}`} />
+        <div style={{ display: "flex", flexDirection: "column", gap: space[6] }}>
+
+          {/* In Flight */}
+          <div>
+            <SectionTitle title="In Flight" count={inFlight.length} />
+            {inFlight.length === 0 ? emptyBox("No in-flight projects in this range.") : (
+              <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
+                {inFlight.map(p => (
+                  <ProjectRow key={p.id} proj={p} onNavigate={onProjectNavigate} label={p.isOwner ? "Owner" : undefined} />
+                ))}
+              </div>
+            )}
           </div>
-        ) : (
+
+          {/* Shipped */}
+          <div>
+            <SectionTitle title="Shipped" count={shipped.length} />
+            {shipped.length === 0 ? emptyBox("No shipped projects in this range.") : (
+              <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
+                {shipped.map(p => (
+                  <ProjectRow key={p.id} proj={p} onNavigate={onProjectNavigate} label={p.isOwner ? "Owner" : undefined} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Others (Upcoming / Blocked / Deprioritized) */}
+          {others.length > 0 && (
+            <div>
+              <SectionTitle title="Others" count={others.length} />
+              <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
+                {others.map(p => (
+                  <ProjectRow key={p.id} proj={p} onNavigate={onProjectNavigate} label={p.isOwner ? "Owner" : undefined} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Activity — comments within the selected timeframe */}
+          <div>
+            <SectionTitle title="Activity" count={scopedComments.length} />
+            {scopedComments.length === 0 ? emptyBox(`No activity from ${person?.name?.split(" ")[0] || "this person"} in this range.`) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
+                {scopedComments.map(cmt => (
+                  <CommentRow
+                    key={cmt.id}
+                    comment={cmt}
+                    project={projectsById.get(cmt.project_id)}
+                    onNavigate={onProjectNavigate}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ═══════════ UPCOMING PROJECTS ═══════════ */}
+      {upcoming.length > 0 && (
+        <div>
+          <GroupHeader title="Upcoming Projects" subtitle="Not started yet" />
           <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
-            {inFlight.map(p => (
+            {upcoming.map(p => (
               <ProjectRow key={p.id} proj={p} onNavigate={onProjectNavigate} label={p.isOwner ? "Owner" : undefined} />
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* ── Shipped Projects ───────────────────────────────────── */}
-      <div>
-        <SectionTitle title="Shipped" count={shipped.length} />
-        {shipped.length === 0 ? (
-          <div style={{
-            padding: space[4], borderRadius: layout.radiusSm,
-            background: c.surface, border: `1px dashed ${c.border}`,
-            color: c.textDim, fontSize: 13, fontFamily: body, textAlign: "center",
-          }}>
-            No shipped projects yet.
-          </div>
-        ) : (
+      {/* ═══════════ PREVIOUS PROJECTS ═══════════ */}
+      {previous.length > 0 && (
+        <div>
+          <GroupHeader title="Previous Projects" subtitle={`Outside ${tfLabel}`} />
           <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
-            {shipped.map(p => (
+            {previous.map(p => (
               <ProjectRow key={p.id} proj={p} onNavigate={onProjectNavigate} label={p.isOwner ? "Owner" : undefined} />
             ))}
           </div>
-        )}
-      </div>
-
-      {/* ── Recent Activity ────────────────────────────────────── */}
-      <div>
-        <SectionTitle title="Recent Activity" count={comments.length} />
-        {comments.length === 0 ? (
-          <div style={{
-            padding: space[4], borderRadius: layout.radiusSm,
-            background: c.surface, border: `1px dashed ${c.border}`,
-            color: c.textDim, fontSize: 13, fontFamily: body, textAlign: "center",
-          }}>
-            No activity yet. When {person?.name || "this person"} comments on a
-            project, you'll see the latest activity here.
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
-            {comments.map(cmt => (
-              <CommentRow
-                key={cmt.id}
-                comment={cmt}
-                project={projectsById.get(cmt.project_id)}
-                onNavigate={onProjectNavigate}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,29 +18,15 @@ const firstGlyph = (name) => {
   return arr.length ? arr[0].toUpperCase() : "?";
 };
 
-// ── Capacity model for member workload (active = in_flight + blocked) ──
-//   1–2 healthy (green) · 3 watch (amber) · 4+ overloaded (red) · 0 unassigned.
-const CAPACITY_FULL = 4;        // 4+ active projects fills the bar / flags overload
-const OVERLOAD_AT = 4;          // threshold for the "overloaded" alert (more than 3)
-function capacityOf(count) {
-  if (count >= OVERLOAD_AT) return { zone: "overloaded", color: c.red, label: "Overloaded" };
-  if (count === 3) return { zone: "watch", color: c.amber, label: "At capacity" };
-  if (count >= 1) return { zone: "healthy", color: c.green, label: "Healthy" };
-  return { zone: "idle", color: c.textDim, label: "Unassigned" };
-}
-
-// Key squad roles we proactively check coverage for.
-const KEY_ROLES = [
-  { label: "PM", test: r => /product manager|^pm$/i.test(r) },
-  { label: "Engineer", test: r => /engineer|developer|^swe$/i.test(r) },
-  { label: "Designer", test: r => /design/i.test(r) },
-];
+// ── Capacity model for member workload (active = in-flight only) ──
+//   > 5 active projects → overloaded (red). 0 → under-utilised.
+const OVERLOAD_AT = 5;          // overloaded when active project count exceeds this
 
 /* ═══════════════════════════════════════════════════════════ */
 /*  PEOPLE DEEP DIVE                                         */
 /* ═══════════════════════════════════════════════════════════ */
 
-const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history, onNavigate, initialPerson, setDetailLabel, setGoBack, searchRef, isHistorical = false, selectedWeekKey, weekConfig: weekConfigProp, globalFilters = {}, loading, error, viewerSquad, viewerName, isAdmin = false }) => {
+const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history, onNavigate, initialPerson, setDetailLabel, setGoBack, searchRef, isHistorical = false, selectedWeekKey, weekConfig: weekConfigProp, globalFilters = {}, loading, error, viewerSquad, viewerName, isAdmin = false, timeframe }) => {
   const devRef = useDevLabel(
     'PeopleDeepDive',
     'src/views/PeopleDeepDive.jsx',
@@ -95,10 +81,10 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
   const flatFiltered = [];
   Object.values(squadsWithPeople).forEach(members => flatFiltered.push(...members));
 
-  // Compute per-person active project counts (in_flight + blocked only)
+  // Compute per-person active project counts (in-flight only)
   const personProjectCounts = useMemo(() => {
     const map = {};
-    const activeProjs = (projects || []).filter(p => isInFlight(p) || p.status === "blocked");
+    const activeProjs = (projects || []).filter(p => isInFlight(p) && p.status !== "blocked" && p.status !== "deprioritized" && p.status !== "upcoming" && !isShipped(p));
     people.forEach(p => {
       const count = activeProjs.filter(proj =>
         proj.owner_id === p.id ||
@@ -253,54 +239,62 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
           />
         </KpiGrid>
 
-        {/* ═══ TEAM HEALTH — proactive capacity & coverage alerts ═══ */}
+        {/* ═══ TEAM HEALTH — capacity at a glance ═══ */}
         {(() => {
-          const flags = [];
+          // Overloaded — more than 5 active projects (red).
+          const overloadedPeople = people
+            .filter(p => (personProjectCounts[p.id] || 0) > OVERLOAD_AT)
+            .sort((a, b) => (personProjectCounts[b.id] || 0) - (personProjectCounts[a.id] || 0));
+          // Under-utilised — no active project.
+          const underUtilised = people
+            .filter(p => (personProjectCounts[p.id] || 0) === 0)
+            .sort((a, b) => a.name.localeCompare(b.name));
 
-          // 1. Overloaded members (4+ active projects → red)
-          people
-            .filter(p => (personProjectCounts[p.id] || 0) >= OVERLOAD_AT)
-            .sort((a, b) => (personProjectCounts[b.id] || 0) - (personProjectCounts[a.id] || 0))
-            .forEach(p => {
-              const n = personProjectCounts[p.id] || 0;
-              flags.push({ sev: "critical", text: `${p.name.split(" ")[0]} is overloaded — ${n} active projects`, action: () => openPerson(p.name) });
-            });
+          const totalAlerts = overloadedPeople.length + underUtilised.length;
 
-          // Group ALL people by squad (not the filtered view) for structural checks.
-          const squadMembers = {};
-          people.forEach(p => { const s = (p.squad || "").trim() || "Unassigned"; (squadMembers[s] = squadMembers[s] || []).push(p); });
-
-          // 2. Single-member squads (bus-factor risk → amber)
-          Object.entries(squadMembers)
-            .filter(([sq, m]) => sq !== "Unassigned" && m.length === 1)
-            .forEach(([sq]) => flags.push({ sev: "warning", text: `${sq} squad has only 1 member` }));
-
-          // 3. Squads missing a key role (PM / Engineer / Designer → amber).
-          // Skip single-member squads — they obviously lack roles (already flagged).
-          Object.entries(squadMembers)
-            .filter(([sq, m]) => sq !== "Unassigned" && m.length >= 2)
-            .forEach(([sq, m]) => {
-              const missing = KEY_ROLES.filter(role => !m.some(p => role.test(p.role || "")));
-              if (missing.length > 0) {
-                flags.push({ sev: "warning", text: `${sq} squad has no ${missing.map(r => r.label).join(", ")} assigned` });
-              }
-            });
-
-          // 4. Untagged resources — members on no active project (→ neutral)
-          const idle = people.filter(p => (personProjectCounts[p.id] || 0) === 0);
-          if (idle.length > 0) {
-            const names = idle.slice(0, 4).map(p => p.name.split(" ")[0]).join(", ");
-            flags.push({ sev: "info", text: `${idle.length} member${idle.length === 1 ? "" : "s"} unassigned to any active project — ${names}${idle.length > 4 ? ` +${idle.length - 4} more` : ""}` });
-          }
-
-          const counts = {
-            critical: flags.filter(f => f.sev === "critical").length,
-            warning: flags.filter(f => f.sev === "warning").length,
-            info: flags.filter(f => f.sev === "info").length,
+          // Clickable person chip — "Name · N" (N = active project count).
+          const PersonChip = ({ p, accent }) => {
+            const n = personProjectCounts[p.id] || 0;
+            return (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); openPerson(p.name); }}
+                title={`Open ${p.name} — ${n} active project${n === 1 ? "" : "s"}`}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "3px 9px", borderRadius: layout.radiusPill,
+                  background: c.surface, border: `1px solid ${c.border}`,
+                  cursor: "pointer", color: c.text,
+                  fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
+                  transition: `border-color ${motion.fast.duration} ${motion.fast.easing}, background ${motion.fast.duration} ${motion.fast.easing}`,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.background = accent + "0E"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = c.border; e.currentTarget.style.background = c.surface; }}
+              >
+                {p.name}
+                <span style={{ color: c.textGhost || c.textDim }}>·</span>
+                <span style={{ fontFamily: typo.monoSm.font, fontWeight: 700, color: accent, fontVariantNumeric: "tabular-nums" }}>{n}</span>
+              </button>
+            );
           };
-          const dotColor = { critical: c.red, warning: c.amber, info: c.textDim, ok: c.green };
-          const rowBg = { critical: c.red + "0A", warning: c.amber + "0C", info: c.textDim + "0A", ok: c.green + "0A" };
-          const rowBorder = { critical: c.red + "20", warning: c.amber + "22", info: c.border, ok: c.green + "20" };
+
+          const CategoryRow = ({ label, accent, list }) => (
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: space[3],
+              padding: `${space[3]}px ${space[3]}px`,
+              borderRadius: layout.radiusSm,
+              background: accent + "0A", border: `1px solid ${accent}20`,
+            }}>
+              <span style={{
+                fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700,
+                letterSpacing: "0.06em", textTransform: "uppercase", color: accent,
+                whiteSpace: "nowrap", flexShrink: 0,
+              }}>{label}<span style={{ marginLeft: 6, color: c.textDim }}>{list.length}</span></span>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: space[2], rowGap: space[2] }}>
+                {list.map(p => <PersonChip key={p.id} p={p} accent={accent} />)}
+              </div>
+            </div>
+          );
 
           return (
             <div style={{
@@ -314,7 +308,7 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
               <div
                 role="button" tabIndex={0}
                 aria-expanded={teamHealthOpen}
-                aria-label={`Team Health — ${flags.length} alert${flags.length === 1 ? "" : "s"}. Click to ${teamHealthOpen ? "collapse" : "expand"}.`}
+                aria-label={`Team Health — ${totalAlerts} flag${totalAlerts === 1 ? "" : "s"}. Click to ${teamHealthOpen ? "collapse" : "expand"}.`}
                 onClick={() => setTeamHealthOpen(o => !o)}
                 onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTeamHealthOpen(o => !o); } }}
                 style={{ display: "flex", alignItems: "center", gap: space[2], cursor: "pointer", userSelect: "none", marginBottom: teamHealthOpen ? space[1] : 0 }}
@@ -323,21 +317,20 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                   fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700,
                   letterSpacing: "0.08em", color: c.text, textTransform: "uppercase",
                 }}>Team Health</span>
-                {/* Severity tally chips */}
-                {flags.length === 0 ? (
+                {/* Tally chips */}
+                {totalAlerts === 0 ? (
                   <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.green }}>● All clear</span>
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                    {counts.critical > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.red }}>● {counts.critical}</span>}
-                    {counts.warning > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.amber }}>● {counts.warning}</span>}
-                    {counts.info > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.textDim }}>● {counts.info}</span>}
+                    {overloadedPeople.length > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.red }}>● {overloadedPeople.length} overloaded</span>}
+                    {underUtilised.length > 0 && <span style={{ fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700, color: c.textDim }}>● {underUtilised.length} under-utilised</span>}
                   </div>
                 )}
                 {/* Collapsed hint + chevron, pushed right */}
                 <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: space[2] }}>
                   {!teamHealthOpen && (
                     <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textDim }}>
-                      {flags.length === 0 ? "no risks" : `${flags.length} alert${flags.length === 1 ? "" : "s"} — show`}
+                      {totalAlerts === 0 ? "no risks" : `${totalAlerts} flag${totalAlerts === 1 ? "" : "s"} — show`}
                     </span>
                   )}
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={c.textMid} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
@@ -347,36 +340,23 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                 </span>
               </div>
 
-              {!teamHealthOpen ? null : flags.length === 0 ? (
+              {!teamHealthOpen ? null : totalAlerts === 0 ? (
                 <div style={{
                   display: "flex", alignItems: "center", gap: space[2],
                   padding: `${space[2]}px ${space[3]}px`, borderRadius: layout.radiusSm,
-                  background: rowBg.ok, border: `1px solid ${rowBorder.ok}`,
+                  background: c.green + "0A", border: `1px solid ${c.green}20`,
                 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor.ok, flexShrink: 0 }} />
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: c.green, flexShrink: 0 }} />
                   <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.text, lineHeight: 1.5 }}>
-                    No capacity or coverage risks detected — team looks healthy.
+                    No one overloaded or under-utilised — capacity looks balanced.
                   </span>
                 </div>
-              ) : flags.map((f, i) => (
-                <div key={i}
-                  onClick={f.action || undefined}
-                  style={{
-                    display: "flex", alignItems: "center", gap: space[2],
-                    padding: `${space[2]}px ${space[3]}px`,
-                    borderRadius: layout.radiusSm,
-                    background: rowBg[f.sev],
-                    border: `1px solid ${rowBorder[f.sev]}`,
-                    cursor: f.action ? "pointer" : "default",
-                    transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
-                  }}
-                  onMouseEnter={f.action ? e => { e.currentTarget.style.background = dotColor[f.sev] + "16"; } : undefined}
-                  onMouseLeave={f.action ? e => { e.currentTarget.style.background = rowBg[f.sev]; } : undefined}
-                >
-                  <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor[f.sev], flexShrink: 0 }} />
-                  <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.text, lineHeight: 1.5 }}>{f.text}</span>
-                </div>
-              ))}
+              ) : (
+                <>
+                  {overloadedPeople.length > 0 && <CategoryRow label="Overloaded" accent={c.red} list={overloadedPeople} />}
+                  {underUtilised.length > 0 && <CategoryRow label="Under-utilised" accent={c.textDim} list={underUtilised} />}
+                </>
+              )}
             </div>
           );
         })()}
@@ -425,55 +405,35 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
                 {members.map((p, gi) => {
                   const isFocused = kbActive && (startIdx + gi) === focusIdx;
                   const projCount = personProjectCounts[p.id] || 0;
-                  const cap = capacityOf(projCount);
-                  const fillPct = Math.min(projCount / CAPACITY_FULL, 1) * 100;
+                  const overloaded = projCount > OVERLOAD_AT;
 
                   return (
-                    <div key={p.name} role="button" tabIndex={0} aria-label={`Open ${p.name}, ${projCount} active projects, ${cap.label}`} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPerson(p.name); } }} className={`flow-row${isFocused ? " flow-kb-focus" : ""}`} onClick={() => openPerson(p.name)} style={{
-                      display: "flex", flexDirection: "column", gap: space[4],
-                      padding: space[6], background: c.surface,
+                    <div key={p.name} role="button" tabIndex={0} aria-label={`Open ${p.name}, ${projCount} active projects${overloaded ? ", overloaded" : ""}`} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPerson(p.name); } }} className={`flow-row${isFocused ? " flow-kb-focus" : ""}`} onClick={() => openPerson(p.name)} style={{
+                      display: "flex", flexDirection: "column", gap: space[3],
+                      padding: space[5], background: c.surface,
                       borderRadius: layout.radiusLg, cursor: "pointer",
                       border: `1px solid ${isFocused ? c.accent : c.border}`,
                       boxShadow: c.shadowCard,
                       animation: `fadeIn ${motion.normal.duration} ${motion.normal.easing} both`,
                       animationDelay: `${Math.min(gi * 30, 400)}ms`,
                     }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: space[3] }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: space[3], minWidth: 0, flex: 1 }}>
-                          <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: "50%", background: c.surfaceAlt, border: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: typo.monoMd.font, fontSize: typo.monoMd.size, fontWeight: typo.monoMd.weight, color: c.textMid, flexShrink: 0 }}>
-                            {firstGlyph(p.name)}
+                      <div style={{ display: "flex", alignItems: "center", gap: space[3], minWidth: 0 }}>
+                        <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: "50%", background: c.surfaceAlt, border: `1px solid ${c.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: typo.monoMd.font, fontSize: typo.monoMd.size, fontWeight: typo.monoMd.weight, color: c.textMid, flexShrink: 0 }}>
+                          {firstGlyph(p.name)}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
+                            <span title={p.name} style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, letterSpacing: typo.displaySm.tracking, color: c.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{p.name}</span>
                           </div>
-                          <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: space[2] }}>
-                              <span title={p.name} style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, letterSpacing: typo.displaySm.tracking, color: c.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{p.name}</span>
-                            </div>
-                            <div title={p.role || ""} style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: typo.bodySm.weight, color: c.textMid, marginTop: space[1], lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {p.role || "—"}
-                            </div>
+                          <div title={p.role || ""} style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: typo.bodySm.weight, color: c.textMid, marginTop: space[1], lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {p.role || "—"}
                           </div>
                         </div>
-                        {/* Project count + capacity zone */}
-                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: space[3], display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-                          <div style={{ fontFamily: typo.monoLg.font, fontSize: 22, fontWeight: 700, color: cap.color, lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
-                            {projCount}
-                          </div>
-                          <div style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: typo.monoSm.weight, letterSpacing: typo.monoSm.tracking, color: cap.color, marginTop: space[1], textTransform: "uppercase" }}>
-                            {cap.label}
-                          </div>
-                        </div>
-                      </div>
 
-                      {/* ── Capacity bar ── */}
-                      <div style={{ display: "flex", flexDirection: "column", gap: space[1] + 2 }}>
-                        <div aria-hidden="true" style={{ position: "relative", height: 4, borderRadius: 2, background: c.surfaceAlt, overflow: "hidden" }}>
-                          <div style={{
-                            position: "absolute", left: 0, top: 0, bottom: 0,
-                            width: `${fillPct}%`, background: cap.color, borderRadius: 2,
-                            transition: `width ${motion.normal.duration} ${motion.normal.easing}, background ${motion.fast.duration} ${motion.fast.easing}`,
-                          }} />
-                        </div>
-                        <div style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: typo.monoSm.weight, color: c.textMid, letterSpacing: typo.monoSm.tracking, fontVariantNumeric: "tabular-nums" }}>
-                          {projCount} active project{projCount === 1 ? "" : "s"}
+                        {/* Big active-project count — red when overloaded (> 5) */}
+                        <div style={{ flexShrink: 0, textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", marginLeft: space[3] }}>
+                          <span style={{ fontFamily: typo.monoLg.font, fontSize: 28, fontWeight: 700, lineHeight: 1, color: overloaded ? c.red : c.text, fontVariantNumeric: "tabular-nums" }}>{projCount}</span>
+                          <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: overloaded ? c.red : c.textDim, marginTop: 3 }}>Active</span>
                         </div>
                       </div>
                     </div>
@@ -561,8 +521,19 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
     proj.owner_id === personObj.id ||
     (isDevSeedMode() && devStore.listMembers(proj.id)?.some(m => m.person_id === personObj.id))
   );
-  const inFlightProjects = personProjects.filter(p => isInFlight(p) || p.status === "blocked");
-  const shippedProjects = personProjects.filter(isShipped);
+  // KPI counts mirror the timeframe-scoped buckets in PersonProjects below.
+  const overlapsTf = (p) => {
+    if (!timeframe?.start || !timeframe?.end) return true;
+    const pStart = p.startDate || p.tentativeStartDate || p.createdAt?.slice(0, 10);
+    const pEnd = p.endDate || p.shipped_at?.slice(0, 10);
+    if (!pStart) return true;
+    return pStart <= timeframe.end && (pEnd ? pEnd >= timeframe.start : true);
+  };
+  const inRangeProjects = personProjects.filter(overlapsTf);
+  const isShippedP = (p) => isShipped(p) || p.status === "shipped";
+  const isOtherP = (p) => p.status === "blocked" || p.status === "deprioritized" || p.status === "upcoming";
+  const inFlightProjects = inRangeProjects.filter(p => !isShippedP(p) && !isOtherP(p));
+  const shippedProjects = inRangeProjects.filter(isShippedP);
 
   // Weeks active (rough: divide total comments by some weekly average)
   const weeksActive = Math.max(1, Math.ceil(activityScore / 3));
@@ -608,6 +579,7 @@ const PeopleDeepDive = ({ people, setPeople, commitments = [], projects, history
       <PersonProjects
         person={personObj}
         projects={projects}
+        timeframe={timeframe}
         onProjectNavigate={(id) => onNavigate && onNavigate("projects", id, { tab: "people", id: selectedPerson })}
       />
     </div>
