@@ -2334,7 +2334,7 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
                     }}
                     onMouseEnter={e => { e.currentTarget.style.background = c.accentDim; e.currentTarget.style.color = c.accent; e.currentTarget.style.borderColor = c.accent; }}
                     onMouseLeave={e => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.color = c.textMid; e.currentTarget.style.borderColor = c.border; }}
-                  >#{tag}</button>
+                  >{tag}</button>
                 ))}
               </div>
             )}
@@ -2676,13 +2676,13 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
     if (!ct || currentTags.length >= 8 || currentTags.some(t => tagKey(t) === tagKey(ct))) return;
     const nextTags = [...(proj.tags || []), ct];
     setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, tags: nextTags } : p));
-    recordAction("project_tag_added", { tag: ct }, `Tagged #${ct}`);
+    recordAction("project_tag_added", { tag: ct }, `Tagged ${ct}`);
   };
   const removeProjectTag = (tag) => {
     const k = tagKey(tag);
     const nextTags = (proj.tags || []).filter(t => tagKey(canonTag(t, tagCanon)) !== k);
     setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, tags: nextTags.length ? nextTags : null } : p));
-    recordAction("project_tag_removed", { tag }, `Removed #${tag}`);
+    recordAction("project_tag_removed", { tag }, `Removed ${tag}`);
   };
 
   // Re-clone the project's tracks into fresh references so React re-renders
@@ -3371,7 +3371,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                   }}>
                     <button
                       type="button"
-                      title={`Filter projects by #${tag}`}
+                      title={`Filter projects by ${tag}`}
                       onClick={() => onApplyTagFilter && onApplyTagFilter(tag)}
                       style={{
                         background: "none", border: "none", padding: 0, cursor: "pointer",
@@ -3380,11 +3380,11 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                       }}
                       onMouseEnter={e => { e.currentTarget.style.color = c.accent; }}
                       onMouseLeave={e => { e.currentTarget.style.color = c.textMid; }}
-                    >#{tag}</button>
+                    >{tag}</button>
                     {canEditTags && (
                       <button
                         type="button"
-                        title={`Remove #${tag}`}
+                        title={`Remove ${tag}`}
                         onClick={(e) => { e.stopPropagation(); removeProjectTag(tag); }}
                         style={{ background: "none", border: "none", cursor: "pointer", padding: "0 1px", lineHeight: 1, color: c.textDim, fontSize: 13, fontWeight: 400 }}
                         onMouseEnter={e => { e.currentTarget.style.color = c.red; }}
@@ -3452,7 +3452,7 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                             }}
                             onMouseEnter={e => { e.currentTarget.style.background = c.accentDim; e.currentTarget.style.color = c.accent; e.currentTarget.style.borderColor = c.accent; }}
                             onMouseLeave={e => { e.currentTarget.style.background = c.surfaceAlt; e.currentTarget.style.color = c.textMid; e.currentTarget.style.borderColor = c.border; }}
-                          >#{tag}</button>
+                          >{tag}</button>
                         ))}
                       </div>
                     )}
