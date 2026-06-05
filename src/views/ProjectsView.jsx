@@ -274,7 +274,7 @@ export default function ProjectsView({
   initialId, onNavigate, setDetailLabel, setGoBack, searchRef, globalFilters = {},
   suppressBackRef,
   projectLinks, setProjectLinks, phaseDurationDefaults,
-  followedProjects = [], toggleFollowProject,
+  myLens = false, followedProjects = [], toggleFollowProject,
   timeframe, onApplyTagFilter,
 }) {
   const can = permCan || defaultCan;
@@ -489,6 +489,10 @@ export default function ProjectsView({
     }
     if ((globalFilters.type || []).length > 0) list = list.filter(p => globalFilters.type.includes(p.type));
     if ((globalFilters.tags || []).length > 0) list = list.filter(p => globalFilters.tags.some(tg => projectHasTag(p.tags, tg, tagCanon)));
+    // My Lens: show only followed projects (auto-followed squad + explicit follows)
+    if (myLens) {
+      list = list.filter(p => followedProjects.includes(p.id));
+    }
     // Timeframe filter: project overlaps with the selected range
     if (timeframe?.start && timeframe?.end) {
       list = list.filter(p => {
@@ -502,7 +506,7 @@ export default function ProjectsView({
       });
     }
     return list;
-  }, [projects, search, globalFilters, metrics, listSquadFilter, personProfile, followedProjects, timeframe, tagCanon]);
+  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe, tagCanon]);
 
   // ── Tab splits ──
   // When a search query is active, bypass the tab filter so results surface
@@ -1870,9 +1874,10 @@ export default function ProjectsView({
                           padding: `0 ${space[3]}px`, borderBottom: cellBorder,
                           textAlign: "center", width: 32,
                         }}>
-                          {/* Followed projects always show a filled bookmark; hovering any
-                              other row reveals an outline bookmark to follow it. */}
-                          {(() => {
+                          {/* When My Lens is off: followed projects always show a filled
+                              bookmark; hovering any other row reveals an outline bookmark
+                              to follow it. (In My Lens view everything shown is followed.) */}
+                          {!myLens && (() => {
                             const isFollowed = followedProjects.includes(proj.id);
                             if (!isFollowed && !isHovered) return null;
                             return (
