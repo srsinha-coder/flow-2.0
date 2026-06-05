@@ -442,41 +442,6 @@ const GuideView = ({ onNavigate }) => {
           ══════════════════════════════════════════════════════════════ */}
       <Divider label="Power features" />
 
-      {/* MY LENS */}
-      <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
-        <SectionTitle title="My Lens" subtitle="Your personalized view" color={c.accent} />
-
-        <Surface variant="panel" style={{ padding: `${space[5]}px`, display: "flex", flexDirection: "column", gap: space[3], ...indented }}>
-          <Body>
-            My Lens filters the project registry to show only what matters to you: <B>your squad's projects</B> and <B>projects you follow</B>. Toggle it from the header bar.
-          </Body>
-
-          <ExampleCard style={{ display: "flex", alignItems: "center", gap: space[3] }}>
-            <span style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600, color: c.textMid }}>My Lens</span>
-            <div style={{
-              width: 36, height: 20, borderRadius: 10,
-              background: c.accent, position: "relative",
-              display: "flex", alignItems: "center",
-            }}>
-              <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", left: 18, transition: "left 0.2s" }} />
-            </div>
-            <span style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.accent, fontWeight: 600 }}>ON</span>
-            <span style={{ fontFamily: typo.bodySm.font, fontSize: 11, color: c.textDim, marginLeft: "auto" }}>Showing your squad + followed projects</span>
-          </ExampleCard>
-
-          <Callout icon="💡" color={c.accent}>
-            My Lens only filters the project registry view. Announcements (shipped projects) and mentions are always visible regardless of lens, so you never miss important org-wide updates.
-          </Callout>
-
-          <div>
-            <div style={{ fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 700, color: c.text, marginBottom: space[1] }}>How to follow a project</div>
-            <Body>
-              Open any project's deep-dive and click the <B>Follow</B> button. Followed projects appear in your My Lens view even if they belong to another squad. Great for cross-squad dependencies.
-            </Body>
-          </div>
-        </Surface>
-      </div>
-
       {/* PIN PROJECTS */}
       <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
         <SectionTitle title="Pin Projects" subtitle="Quick access to top priorities" color={c.orange} />
@@ -793,7 +758,6 @@ const GuideView = ({ onNavigate }) => {
         <Body style={{ maxWidth: 560, margin: "0 auto", textAlign: "center" }}>
           Open <B color={c.accent}>Projects</B> to see every active workstream, who owns it, and whether it needs help.
           Click in to read the timeline or post your own update.
-          Turn on <B color={c.accent}>My Lens</B> to focus on your squad and followed projects.
           Use <Kbd>⌘K</Kbd> to search anything, anywhere.
         </Body>
         <div style={{ marginTop: space[5], display: "flex", gap: space[3], justifyContent: "center" }}>

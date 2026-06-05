@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { createPortal } from "react-dom";
 import { c, typo, space, layout, motion, phaseNames, shipPhases, allPhases, trackNames, typeConfig, phaseColors as getPhaseColors, phaseMids as getPhaseMids, phaseDims as getPhaseDims, statusColors, statusConfig, entityColors, colWidths } from "../styles/theme";
 import { Badge, Tag, Modal, Label, Btn, Inp, Sel, SearchSelect, EmptyState, TelemetryLabel, Th as SharedTh, TableShell, StickyLeftTd } from "../components/shared";
+import PinButton from "../components/PinButton";
 import { KpiGrid, KpiCard, SectionHead, SegmentedToggle, Pill, PillRow } from "../components/kpi";
 import useKeyboard from "../hooks/useKeyboard";
 import useExitAnimation from "../hooks/useExitAnimation";
@@ -19,6 +20,7 @@ import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
 import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB } from "../lib/mutations";
 import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, pauseAllTracks, getReleaseMilestone } from "../lib/tracks";
 import { buildTagCanon, canonTag, canonTags, allTagsWithCounts, projectHasTag, tagKey } from "../lib/tags";
+import { groupProjects } from "../lib/projectSortUtils";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
@@ -272,7 +274,7 @@ export default function ProjectsView({
   initialId, onNavigate, setDetailLabel, setGoBack, searchRef, globalFilters = {},
   suppressBackRef,
   projectLinks, setProjectLinks, phaseDurationDefaults,
-  myLens = false, followedProjects = [], toggleFollowProject,
+  followedProjects = [], toggleFollowProject,
   timeframe, onApplyTagFilter,
 }) {
   const can = permCan || defaultCan;
@@ -349,8 +351,8 @@ export default function ProjectsView({
       if (createSuccessTimerRef.current) clearTimeout(createSuccessTimerRef.current);
     };
   }, []);
-  const [sortKey, setSortKey] = useState("squad");
-  const [sortDir, setSortDir] = useState("asc");
+  const [sortKey, setSortKey] = useState("last");
+  const [sortDir, setSortDir] = useState("desc");
   const [hoveredProject, setHoveredProject] = useState(null);
   const [activityTip, setActivityTip] = useState(null); // { projId, rect }
   const activityTipTimer = useRef(null);
@@ -369,20 +371,25 @@ export default function ProjectsView({
   const toastAnim = useExitAnimation(!!createError, 150);
   const successToastAnim = useExitAnimation(!!createSuccess, 200);
   const [listSquadFilter, setListSquadFilter] = useState("");
-  const [pinnedIds, setPinnedIds] = useState(() => {
-    try { return new Set(JSON.parse(sessionStorage.getItem("flow_pinned_projects") || "[]")); }
-    catch { return new Set(); }
+  // Pins carry a timestamp so the list can order "most recently pinned first".
+  // Stored as { [id]: epochMs }; the legacy array format is migrated on load.
+  const [pinnedMap, setPinnedMap] = useState(() => {
+    try {
+      const raw = JSON.parse(sessionStorage.getItem("flow_pinned_projects") || "{}");
+      if (Array.isArray(raw)) { const o = {}; raw.forEach((id, i) => { o[id] = i + 1; }); return o; }
+      return raw && typeof raw === "object" ? raw : {};
+    } catch { return {}; }
   });
-  const togglePin = useCallback((id, e) => {
-    if (e) { e.stopPropagation(); e.preventDefault(); }
-    setPinnedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      sessionStorage.setItem("flow_pinned_projects", JSON.stringify([...next]));
-      return next;
-    });
+  const persistPins = (m) => { try { sessionStorage.setItem("flow_pinned_projects", JSON.stringify(m)); } catch { /* ignore */ } };
+  const pinnedIds = useMemo(() => new Set(Object.keys(pinnedMap)), [pinnedMap]);
+  const pinnedAt = useCallback((id) => pinnedMap[id] || 0, [pinnedMap]);
+  const pinProject = useCallback((id, followOnPin = false) => {
+    setPinnedMap(prev => { const next = { ...prev, [id]: Date.now() }; persistPins(next); return next; });
+    if (followOnPin && toggleFollowProject && !(followedProjects || []).includes(id)) toggleFollowProject(id);
+  }, [toggleFollowProject, followedProjects]);
+  const unpinProject = useCallback((id) => {
+    setPinnedMap(prev => { const next = { ...prev }; delete next[id]; persistPins(next); return next; });
   }, []);
-  // watchlist filter removed
   const [boardSearch, setBoardSearch] = useState("");
   const [boardSquads, setBoardSquads] = useState([]);
   const [boardOwners, setBoardOwners] = useState([]);
@@ -482,10 +489,6 @@ export default function ProjectsView({
     }
     if ((globalFilters.type || []).length > 0) list = list.filter(p => globalFilters.type.includes(p.type));
     if ((globalFilters.tags || []).length > 0) list = list.filter(p => globalFilters.tags.some(tg => projectHasTag(p.tags, tg, tagCanon)));
-    // My Lens: show only followed projects (auto-followed squad + explicit follows)
-    if (myLens) {
-      list = list.filter(p => followedProjects.includes(p.id));
-    }
     // Timeframe filter: project overlaps with the selected range
     if (timeframe?.start && timeframe?.end) {
       list = list.filter(p => {
@@ -499,13 +502,13 @@ export default function ProjectsView({
       });
     }
     return list;
-  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe, tagCanon]);
+  }, [projects, search, globalFilters, metrics, listSquadFilter, personProfile, followedProjects, timeframe, tagCanon]);
 
   // ── Tab splits ──
   // When a search query is active, bypass the tab filter so results surface
   // regardless of tab (searching "X99" while on "Active" tab would otherwise hide
   // shipped/deprioritized matches even though the search matched them).
-  const tabProjects = useMemo(() => {
+  const projectGroups = useMemo(() => {
     let list;
     if (search.trim()) {
       list = filtered;
@@ -525,20 +528,21 @@ export default function ProjectsView({
         default: list = filtered;
       }
     }
-    const sorted = sortList(list, sortKey, sortDir, metrics, today);
-    // Alpha/Beta active projects are grouped with shipped (they're a release).
-    const hasReleased = (p) => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
-    const pinned = sorted.filter(p => pinnedIds.has(p.id));
-    const shipped = sorted.filter(p => !pinnedIds.has(p.id) && (p.status === "shipped" || (p.status === "in_flight" && hasReleased(p))));
-    const regular = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "in_flight" && !hasReleased(p));
-    const blocked = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "blocked");
-    const depri = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "deprioritized");
-    const upcoming = sorted.filter(p => !pinnedIds.has(p.id) && p.status === "upcoming")
-      .sort((a, b) => (a.tentativeStartDate || "9999").localeCompare(b.tentativeStartDate || "9999"));
-    return [...pinned, ...shipped, ...regular, ...blocked, ...depri, ...upcoming];
-  }, [filtered, activeTab, sortKey, sortDir, metrics, today, search, pinnedIds]);
+    // Strict order: Pinned → Following → All Projects. Pinned ordered by pin
+    // recency; following/rest by the active column sort (defaults to last
+    // activity). A pinned+followed project shows in Pinned only.
+    const sortWithin = (l) => sortList(l, sortKey, sortDir, metrics, today);
+    return groupProjects({
+      projects: list,
+      isPinned: (id) => pinnedIds.has(id),
+      isFollowed: (id) => (followedProjects || []).includes(id),
+      pinnedAt,
+      sortWithin,
+    });
+  }, [filtered, activeTab, sortKey, sortDir, metrics, today, search, pinnedIds, pinnedAt, followedProjects]);
+  const tabProjects = projectGroups.list;
 
-  // ── Cross-squad collaboration (My Lens only, for users with a squad) ──
+  // ── Cross-squad collaboration (for users with a squad) ──
   // Projects involving the viewer's squad that also have members from other squads.
   const viewerSquad = personProfile?.squad || null;
   const squadByPersonId = useMemo(() => {
@@ -1585,6 +1589,8 @@ export default function ProjectsView({
                   const isPinned = pinnedIds.has(proj.id);
                   const isShipped = proj.status === "shipped";
                   const hasReleasedTrack = (m.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
+                  const isFollowing = (followedProjects || []).includes(proj.id);
+                  const isMember = proj.owner_id === viewerId || (m.teamMembers || []).includes(viewerId);
                   const isBlockedProj = proj.status === "blocked" || m.isBlocked;
                   const isBlockedOrOverdue = isBlockedProj || m.overdue;
                   const leftBarColor = (isShipped || hasReleasedTrack) ? c.green : isBlockedOrOverdue ? c.red : null;
@@ -1636,18 +1642,14 @@ export default function ProjectsView({
                         transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
                       }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <button
-                            type="button"
-                            title={isPinned ? "Unpin from watchlist" : "Pin to watchlist"}
-                            onClick={(e) => togglePin(proj.id, e)}
-                            style={{
-                              background: "none", border: "none", padding: 0, cursor: "pointer",
-                              fontSize: 12, lineHeight: 1, flexShrink: 0,
-                              opacity: isPinned ? 1 : isHovered ? 0.5 : 0,
-                              color: isPinned ? c.accent : c.textDim,
-                              transition: `opacity ${motion.fast.duration} ${motion.fast.easing}`,
-                            }}
-                          >{isPinned ? "📌" : "📌"}</button>
+                          <PinButton
+                            isPinned={isPinned}
+                            isTeamMember={isMember}
+                            isFollowing={isFollowing}
+                            rowHovered={isHovered}
+                            onPin={(followOnPin) => pinProject(proj.id, followOnPin)}
+                            onUnpin={() => unpinProject(proj.id)}
+                          />
                           <span>{proj.squad}</span>
                           {(collabSquadsByProject[proj.id] || []).length > 0 && (
                             <span
@@ -1868,9 +1870,9 @@ export default function ProjectsView({
                           padding: `0 ${space[3]}px`, borderBottom: cellBorder,
                           textAlign: "center", width: 32,
                         }}>
-                          {/* When My Lens is off: followed projects always show a filled bookmark;
-                              hovering any other row reveals an outline bookmark to follow it. */}
-                          {!myLens && (() => {
+                          {/* Followed projects always show a filled bookmark; hovering any
+                              other row reveals an outline bookmark to follow it. */}
+                          {(() => {
                             const isFollowed = followedProjects.includes(proj.id);
                             if (!isFollowed && !isHovered) return null;
                             return (

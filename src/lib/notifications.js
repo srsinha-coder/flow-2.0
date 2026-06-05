@@ -8,10 +8,10 @@
 // Sources: current project state (blocked / overdue) + activity events
 //          (phase changes, new projects, status changes, comments, members).
 import { isDevSeedMode, devStore } from "../data/devSeed";
+import { isShipped, shippedDateOf, furthestStageOf } from "./tracks";
 
 const DAY_MS = 86_400_000;
 const ARCHIVE_DAYS = 30;     // older than this is auto-archived (excluded)
-const STALE_DAYS = 3;        // "no recent activity" threshold for action items
 
 const firstName = (name) => (name ? String(name).split(/\s+/)[0] : "Someone");
 
@@ -25,30 +25,13 @@ function fmtDate(iso) {
   return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// ── Role lens ──────────────────────────────────────────────────────────────
-// Action Required is critical for everyone. Otherwise:
-//   Lead (isAdmin)      → sees everything (squad oversight)
-//   PM (Product Manager)→ own projects + all phase transitions
-//   Stakeholder (any other role / undefined) → shipped, blockers + own
-// Always returns true for action-tier so nothing critical is hidden.
-function passesRole(n, viewer) {
-  if (n.tier === "action") return true;
-  if (!viewer || !viewer.role) return true;              // undefined role → show all
-  if (viewer.isAdmin) return true;                        // Lead
-  const role = String(viewer.role).toLowerCase();
-  if (role.includes("product manager") || role === "pm") {
-    return n.ownedByViewer || n.type === "phase" || n.type === "shipped";
-  }
-  // Stakeholder (any person): high-signal items + their own projects
-  return n.type === "shipped" || n.ownedByViewer;
-}
-
 /**
- * Build the notification feed for a viewer.
- * @returns array of notification objects sorted action→heads→fyi, recent first,
- *          resolved items sunk to the bottom of their tier.
+ * Collect the raw notification feed for a viewer — every candidate item across
+ * all tiers (action / heads / fyi), unsorted and unfiltered by role/ownership.
+ * The strict filters in notificationFilters.js layer their own filtering on top.
+ * @returns array of notification objects.
  */
-export function buildNotifications({ projects = [], people = [], viewer = null } = {}) {
+export function collectNotifications({ projects = [], people = [], viewer = null } = {}) {
   if (!isDevSeedMode()) return []; // prod path would read from a notifications table
   const now = Date.now();
   const archiveCutoff = now - ARCHIVE_DAYS * DAY_MS;
@@ -79,13 +62,12 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
     const blocked = p.status === "blocked" || p.isBlocked;
     if (!blocked) return;
     const daysBlocked = daysBetween(p.blockedAt, now);
-    const daysIdle = daysBetween(p.lastActivityAt, now);
     out.push({
       id: `block-${p.id}`,
       tier: "action", type: "block",
       projectId: p.id, projectName: p.name, owner: firstName(p.owner),
       title: `${p.name} has been blocked${daysBlocked != null ? ` for ${daysBlocked} day${daysBlocked === 1 ? "" : "s"}` : ""}`,
-      meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
+      meta: `${p.blockedReason ? `${p.blockedReason} · ` : ""}Owner: ${firstName(p.owner)}`,
       ts: p.blockedAt || p.lastActivityAt || new Date(now).toISOString(),
       cta: "Resolve", resolved: false,
       ownedByViewer: ownedByViewer(p.id),
@@ -93,22 +75,22 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
     });
   });
 
-  // ── ACTION: overdue with no recent activity ──
+  // ── ACTION: beyond timeline (deadline/end date has passed) ──
+  // Overdue = due date in the past. Activity level is irrelevant — an actively
+  // worked-on project that blew its deadline still needs attention.
   projects.forEach((p) => {
     if (!p.endDate) return;
     if (["shipped", "deprioritized", "upcoming", "complete"].includes(p.status)) return;
     if (p.status === "blocked" || p.isBlocked) return; // already surfaced as blocked
     const end = new Date(p.endDate + "T00:00:00").getTime();
-    if (end >= now) return;
+    if (end >= now) return; // not past the deadline yet → not overdue
     const daysOver = Math.floor((now - end) / DAY_MS);
-    const daysIdle = daysBetween(p.lastActivityAt, now);
-    if (daysIdle != null && daysIdle < STALE_DAYS) return; // overdue but actively moving — not action
     out.push({
       id: `overdue-${p.id}`,
       tier: "action", type: "overdue",
       projectId: p.id, projectName: p.name, owner: firstName(p.owner),
       title: `${p.name} is overdue by ${daysOver} day${daysOver === 1 ? "" : "s"}`,
-      meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
+      meta: `Due ${fmtDate(p.endDate)} · Owner: ${firstName(p.owner)}`,
       ts: p.endDate + "T00:00:00",
       cta: "View Project", resolved: false,
       ownedByViewer: ownedByViewer(p.id),
@@ -272,13 +254,110 @@ export function buildNotifications({ projects = [], people = [], viewer = null }
     });
   });
 
-  // Role lens + final sort. FYI tier is intentionally excluded from the feed.
-  const filtered = out.filter((n) => n.tier !== "fyi" && passesRole(n, viewer));
-  const tierRank = { action: 0, heads: 1, fyi: 2 };
-  filtered.sort((a, b) => {
-    if (tierRank[a.tier] !== tierRank[b.tier]) return tierRank[a.tier] - tierRank[b.tier];
+  return out;
+}
+
+const TIER_RANK = { action: 0, heads: 1, fyi: 2 };
+export function sortFeed(list) {
+  return [...list].sort((a, b) => {
+    if (TIER_RANK[a.tier] !== TIER_RANK[b.tier]) return TIER_RANK[a.tier] - TIER_RANK[b.tier];
     if (!!a.resolved !== !!b.resolved) return a.resolved ? 1 : -1; // resolved sink within tier
     return new Date(b.ts) - new Date(a.ts);
   });
-  return filtered;
+}
+
+// ── Mentions ────────────────────────────────────────────────────────────────
+// Pull @mentions of the viewer out of project comments. Self-authored comments
+// and archived (>30d) comments are excluded so the inbox stays tight.
+const MENTION_RE = /@([A-Za-z]\w*(?:\s[A-Z]\w*)?)/g;
+export function extractMentions(text) {
+  if (!text) return [];
+  const set = new Set();
+  let m;
+  while ((m = MENTION_RE.exec(text)) !== null) {
+    const full = m[1].toLowerCase();
+    set.add(full);
+    const fn = full.split(/\s+/)[0];
+    if (fn !== full) set.add(fn);
+  }
+  return [...set];
+}
+
+export function buildMentions({ projects = [], people = [], viewer = null } = {}) {
+  if (!isDevSeedMode() || !viewer?.name) return [];
+  const peopleById = new Map((people || []).map((p) => [p.id, p]));
+  const vn = viewer.name.toLowerCase();
+  const fn = viewer.name.split(/\s+/)[0]?.toLowerCase();
+  const cutoff = Date.now() - ARCHIVE_DAYS * DAY_MS;
+  const out = [];
+  (projects || []).forEach((p) => {
+    (devStore.listComments(p.id) || []).forEach((cmt) => {
+      if (cmt.deleted_at) return;
+      if (viewer.id && cmt.author_id === viewer.id) return;     // self
+      if (new Date(cmt.created_at).getTime() < cutoff) return;  // archived
+      const names = extractMentions(cmt.body);
+      if (!names.some((n) => n === vn || n === fn)) return;
+      out.push({
+        id: `mention-${cmt.id}`,
+        commentId: cmt.id,
+        projectId: p.id,
+        projectName: p.name,
+        author: peopleById.get(cmt.author_id) || null,
+        body: cmt.body || "",
+        ts: cmt.created_at,
+      });
+    });
+  });
+  return out.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+}
+
+// ── What's New (timeline) ─────────────────────────────────────────────────────
+// Product-wide good news, newest first. Each shipped project surfaces exactly
+// ONCE at its furthest release stage (derived from project state, not the event
+// log), so rapid Alpha→Beta→GA steps never spam duplicates. Authored
+// announcements are interleaved by date.
+//   kind: "launched" (GA) | "shipped" (Alpha/Beta) | "announce"
+export function buildWhatsNew({ projects = [], announcements = [] } = {}) {
+  const items = [];
+
+  (projects || []).forEach((p) => {
+    if (!isShipped(p)) return;
+    const date = shippedDateOf(p);
+    if (!date) return;
+    const stage = furthestStageOf(p); // Alpha | Beta | GA
+    const launched = stage === "GA";
+    // Version label: explicit field if present, else derived from release stage
+    // (GA reads as a 1.0 launch; Alpha/Beta keep their stage + rollout %).
+    const version = p.version
+      || (launched ? "v1.0 · GA" : `${stage}${p.shipPct != null ? ` · ${p.shipPct}%` : ""}`);
+    items.push({
+      id: `wn-ship-${p.id}`,
+      kind: launched ? "launched" : "shipped",
+      date: date.slice(0, 10),
+      projectId: p.id,
+      projectName: p.name,
+      squad: p.squad || null,
+      owner: p.owner || null,
+      description: p.description || null,
+      releaseNotes: p.shipNote || p.releaseNotes || null,
+      version,
+      stage,
+      title: p.name,
+    });
+  });
+
+  (announcements || []).forEach((a) => {
+    if (!a?.date) return;
+    items.push({
+      id: `wn-ann-${a.id}`,
+      kind: "announce",
+      date: a.date.slice(0, 10),
+      title: a.title,
+      body: a.body || "",
+      tag: a.tag || "update",
+      link: a.link || null,
+    });
+  });
+
+  return items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 }

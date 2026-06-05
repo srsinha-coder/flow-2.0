@@ -115,7 +115,7 @@ const SummaryView = ({
   projects, people, squads,
   globalFilters, onNavigate,
   phaseDurationDefaults,
-  myLens = false, followedProjects = [], viewerSquad,
+  followedProjects = [], viewerSquad,
   timeframe,
 }) => {
   const devRef = useDevLabel('SummaryView', 'src/views/SummaryView.jsx', 'Project-centric dashboard');
@@ -125,7 +125,29 @@ const SummaryView = ({
     let p = projects;
     if (gf.squad?.length) p = p.filter(x => gf.squad.includes(x.squad));
     if (gf.owner?.length) p = p.filter(x => gf.owner.includes(x.owner));
-    if (myLens) p = p.filter(x => followedProjects.includes(x.id));
+    // People filter: keep projects where any selected person is the owner/DRI OR
+    // a team member. Person values are names; owner/members may be stored by name
+    // or id, so we match against both (mirrors ProjectsView's projectPeople).
+    if (gf.person?.length) {
+      const idToName = new Map((people || []).map(pp => [pp.id, pp.name]));
+      p = p.filter(proj => {
+        const assoc = new Set();
+        if (proj.owner) assoc.add(proj.owner);
+        if (proj.owner_id != null) {
+          assoc.add(proj.owner_id);
+          const on = idToName.get(proj.owner_id);
+          if (on) assoc.add(on);
+        }
+        if (isDevSeedMode()) {
+          (devStore.listMembers(proj.id) || []).forEach(m => {
+            assoc.add(m.person_id);
+            const nm = idToName.get(m.person_id);
+            if (nm) assoc.add(nm);
+          });
+        }
+        return gf.person.some(fp => assoc.has(fp));
+      });
+    }
     if (timeframe?.start && timeframe?.end) {
       p = p.filter(proj => {
         const pStart = proj.startDate || proj.tentativeStartDate || proj.createdAt?.slice(0, 10);
@@ -135,7 +157,7 @@ const SummaryView = ({
       });
     }
     return p;
-  }, [projects, gf.squad, gf.owner, myLens, viewerSquad, followedProjects, timeframe]);
+  }, [projects, people, gf.squad, gf.owner, gf.person, viewerSquad, followedProjects, timeframe]);
 
   const metrics = useMemo(
     () => computeProjectMetrics(filteredProjects, phaseDurationDefaults),
