@@ -3,12 +3,11 @@
 //   1) Weekly digest 2) Pipeline shape 3) What needs attention?
 import React, { useState, useMemo } from "react";
 import { c, typo, space, layout, motion, shipPhases, phaseColors, allPhases, phaseNames, trackNames } from "../styles/theme";
-import { getActiveTracks, getTrackActiveDays } from "../lib/tracks";
+import { getActiveTracks, getTrackActiveDays, isShipped, isInFlight, hasShipMarker, shippedDateOf, furthestStageOf } from "../lib/tracks";
 import { Surface, Label, EmptyState } from "../components/shared";
 import { KpiGrid, KpiCard, SectionHead, Pill, PillRow } from "../components/kpi";
 import { isDevSeedMode, devStore } from "../data/devSeed";
 import useDevLabel from "../hooks/useDevLabel";
-
 const FROZEN_DAYS = 7;
 
 function computeProjectMetrics(projects, phaseDurationDefaults) {
@@ -16,8 +15,8 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
   const todayMs = today.getTime();
   const weekAgo = new Date(todayMs - 7 * 86_400_000);
 
-  const active = projects.filter(p => p.status === "in_flight");
-  const shipped = projects.filter(p => p.status === "shipped");
+  const active = projects.filter(isInFlight);
+  const shipped = projects.filter(isShipped);
   const blocked = projects.filter(p => p.status === "blocked" || p.isBlocked);
   const deprioritized = projects.filter(p => p.status === "deprioritized");
   const upcoming = projects.filter(p => p.status === "upcoming");
@@ -48,59 +47,163 @@ function computeProjectMetrics(projects, phaseDurationDefaults) {
   };
 }
 
+// Reconstruct approximate project status at a past dateMs using timestamp fields.
+// Used for WoW/MoM KPI deltas. Only shipped_at gives a precise transition point;
+// everything else stays at current status.
+function computeCountsAt(projects, dateMs) {
+  let active = 0, shipped = 0, blocked = 0, overdue = 0, deprioritized = 0;
+  projects.forEach(p => {
+    const createdMs = new Date(p.createdAt || p.created_at || 0).getTime();
+    if (createdMs > dateMs) return;
+    let histStatus = p.status;
+    if (isShipped(p)) {
+      // Shipped only counts from its ship date onward; before that it was in flight.
+      const sd = shippedDateOf(p);
+      histStatus = (sd && new Date(sd + "T00:00:00").getTime() > dateMs) ? "in_flight" : "shipped";
+    } else if (isInFlight(p)) {
+      histStatus = "in_flight";
+    }
+    if (histStatus === "in_flight") active++;
+    else if (histStatus === "shipped") shipped++;
+    else if (histStatus === "blocked") blocked++;
+    else if (histStatus === "deprioritized") deprioritized++;
+    if (p.endDate && histStatus !== "shipped" && histStatus !== "deprioritized") {
+      if (new Date(p.endDate + "T00:00:00").getTime() < dateMs) overdue++;
+    }
+  });
+  return { active, shipped, deprioritized, needsAttention: blocked + overdue };
+}
+
+// Builds the "This Week at a Glance" digest as structured data (not strings),
+// so the renderer can attach color-coded badges, clickable project links,
+// callout styling, and WoW trend chips. Returns { health, rows } where each
+// row is { key, badge:{label,color}, callout?, segments:[{text}|{link}], delta? }.
+const STALE_MS = 3 * 86_400_000; // "no recent activity" threshold for P0 / attention
+
 function generateWeeklyDigest(projects, allEvents) {
   const now = Date.now();
   const weekAgo = now - 7 * 86_400_000;
-  const recentEvents = allEvents.filter(e => new Date(e.created_at).getTime() >= weekAgo);
+  const twoWeeksAgo = now - 14 * 86_400_000;
+  // Scope the activity log to the (already filtered) project set so event-driven
+  // lines — Shipping, New — stay consistent with the KPI cards when a global
+  // filter (squad / owner / people) is active.
+  const projIds = new Set(projects.map(p => p.id));
+  const scopedEvents = allEvents.filter(e => projIds.has(e.entity_id));
 
-  const phaseChanges = recentEvents.filter(e => e.action === "project_phase_changed");
-  const newProjects = recentEvents.filter(e => e.action === "project_created");
-  const blockerEvents = recentEvents.filter(e => e.action === "project_blocked");
-
-  const shipEvents = phaseChanges.filter(e => ["Alpha", "Beta", "GA"].includes(e.details?.to));
+  // Shipped = reached a release stage (Alpha/Beta/GA) this week. Derived from
+  // project state (ship date) rather than events, so it catches every release.
+  const shippedThisWeek = projects.filter(p => {
+    if (!isShipped(p)) return false;
+    const d = shippedDateOf(p);
+    return d && new Date(d + "T00:00:00").getTime() >= weekAgo;
+  });
   const blockedProjects = projects.filter(p => p.isBlocked);
 
-  const squadActivity = {};
-  recentEvents.forEach(e => {
-    const proj = projects.find(p => p.id === e.entity_id);
-    if (proj?.squad) squadActivity[proj.squad] = (squadActivity[proj.squad] || 0) + 1;
-  });
-  const mostActiveSquad = Object.entries(squadActivity).sort((a, b) => b[1] - a[1])[0];
+  const isStale = (p) => !p.lastActivityAt || (now - new Date(p.lastActivityAt).getTime()) > STALE_MS;
 
-  const lines = [];
-
-
-  if (shipEvents.length > 0) {
-    const shipped = shipEvents.map(e => {
-      const proj = projects.find(p => p.id === e.entity_id);
-      return proj ? `${proj.name} → ${e.details.to}` : null;
-    }).filter(Boolean);
-    lines.push(`**Shipping:** ${shipped.join(", ")}.`);
+  // ── (6) Portfolio health score — evaluated worst-case first ──
+  let health;
+  if (blockedProjects.length >= 3) {
+    health = { label: "Critical", color: c.red };
+  } else if (blockedProjects.length >= 1) {
+    health = { label: "At Risk", color: c.amber };
+  } else {
+    health = { label: "On Track", color: c.green };
   }
 
-  if (blockedProjects.length > 0) {
-    lines.push(`**Blockers:** ${blockedProjects.length} project${blockedProjects.length > 1 ? "s" : ""} blocked — ${blockedProjects.map(p => p.name).slice(0, 3).join(", ")}.`);
-  }
-
-  if (newProjects.length > 0) {
-    lines.push(`**New:** ${newProjects.length} project${newProjects.length > 1 ? "s" : ""} created this week.`);
-  }
+  // ── (4) WoW deltas, sourced from project_created activity log ──
+  const createdEvents = scopedEvents.filter(e => e.action === "project_created");
+  const createdBetween = (start, end) => createdEvents.filter(e => {
+    const t = new Date(e.created_at).getTime();
+    return t >= start && t < end;
+  }).length;
+  const newThisWeek = createdBetween(weekAgo, now + 1);
+  const newPrevWeek = createdBetween(twoWeeksAgo, weekAgo);
+  const newDelta = newThisWeek - newPrevWeek;
 
   const upcomingProjects = projects.filter(p => p.status === "upcoming");
+  // Placeholder: status transitions aren't timestamped, so a true prior-week
+  // upcoming count isn't reconstructable yet. Wire delta=null until a periodic
+  // snapshot table exists; the renderer already supports a delta here.
+  const upcomingDelta = null;
+
+  // Helper: turn a list of projects into linkable name segments with separators.
+  const linkSegments = (list, max = 3) => {
+    const shown = list.slice(0, max);
+    const segs = [];
+    shown.forEach((p, i) => {
+      segs.push({ link: { id: p.id, name: p.name } });
+      if (i < shown.length - 1) segs.push({ text: ", " });
+    });
+    if (list.length > max) segs.push({ text: ` +${list.length - max} more` });
+    return segs;
+  };
+
+  const rows = [];
+
+  // ── Shipped — GA releases this week (e.g. "Returns flow → GA") ──
+  if (shippedThisWeek.length > 0) {
+    const segments = [];
+    shippedThisWeek.forEach((p, i) => {
+      segments.push({ link: { id: p.id, name: p.name } });
+      segments.push({ text: " → GA" });
+      segments.push({ text: i < shippedThisWeek.length - 1 ? ", " : "." });
+    });
+    rows.push({ key: "shipped", badge: { label: "Shipped", color: c.green }, segments });
+  }
+
+  // ── (1,2) Blockers — amber badge, clickable links (plain row, no callout) ──
+  if (blockedProjects.length > 0) {
+    rows.push({
+      key: "blockers",
+      badge: { label: "Blockers", color: c.amber },
+      segments: [
+        { text: `${blockedProjects.length} project${blockedProjects.length > 1 ? "s" : ""} blocked — ` },
+        ...linkSegments(blockedProjects),
+        { text: "." },
+      ],
+    });
+  }
+
+  // ── (1,4) New — green badge + WoW delta ──
+  if (newThisWeek > 0) {
+    rows.push({
+      key: "new",
+      badge: { label: "New", color: c.green },
+      segments: [{ text: `${newThisWeek} project${newThisWeek > 1 ? "s" : ""} created this week.` }],
+      delta: newDelta,
+    });
+  }
+
+  // ── (1,4) Upcoming — blue badge + WoW delta (placeholder) ──
   if (upcomingProjects.length > 0) {
     const overdueStart = upcomingProjects.filter(p => p.tentativeStartDate && new Date(p.tentativeStartDate + "T00:00:00").getTime() < now);
-    lines.push(`**Upcoming:** ${upcomingProjects.length} project${upcomingProjects.length > 1 ? "s" : ""} in the pipeline.${overdueStart.length > 0 ? ` ⚠ ${overdueStart.length} past tentative start date.` : ""}`);
+    rows.push({
+      key: "upcoming",
+      badge: { label: "Upcoming", color: c.blue },
+      segments: [{ text: `${upcomingProjects.length} project${upcomingProjects.length > 1 ? "s" : ""} in the pipeline.${overdueStart.length > 0 ? ` ⚠ ${overdueStart.length} past tentative start date.` : ""}` }],
+      delta: upcomingDelta,
+    });
   }
 
-  if (mostActiveSquad) {
-    lines.push(`**Most Active Squad:** ${mostActiveSquad[0]} with ${mostActiveSquad[1]} events.`);
+  // ── (5) Needs Your Attention — neutral badge, replaces Most Active Squad ──
+  // Surfaces blocked projects with no activity in 3+ days (stuck, awaiting an
+  // unblock/decision). No explicit "awaiting approval" field exists in the
+  // schema yet — extend this filter once one is added.
+  const attention = blockedProjects.filter(isStale);
+  if (attention.length > 0) {
+    rows.push({
+      key: "attention",
+      badge: { label: "Needs Your Attention", color: c.textMid },
+      segments: [...linkSegments(attention), { text: " — awaiting decision" }],
+    });
   }
 
-  if (lines.length === 0) {
-    lines.push("Quiet week across all squads. No major movements or blockers detected.");
+  if (rows.length === 0) {
+    rows.push({ key: "quiet", badge: null, segments: [{ text: "Quiet week across all squads. No major movements or blockers detected." }] });
   }
 
-  return lines;
+  return { health, rows };
 }
 
 const TIMELINE_OPTIONS = [
@@ -110,12 +213,108 @@ const TIMELINE_OPTIONS = [
 ];
 
 
+// Colored ↑/↓/= chip for WoW/MoM deltas.
+// inverted=true flips the color semantics (down = good, e.g. Needs Attention).
+// muted=true forces a neutral gray (for the Deprioritized "graveyard" card,
+// where an increase is neither good nor bad).
+const DeltaChip = ({ delta, label, inverted = false, muted = false }) => {
+  if (!Number.isFinite(delta)) return null;
+  const isZero = delta === 0;
+  const color = muted ? c.textMid
+    : isZero ? c.textGhost
+    : (delta > 0) === !inverted ? c.green : c.red;
+  return (
+    <span style={{
+      fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
+      color, fontVariantNumeric: "tabular-nums",
+    }}>
+      {isZero ? "=" : delta > 0 ? `↑${delta}` : `↓${Math.abs(delta)}`} {label}
+    </span>
+  );
+};
+
+// ── Weekly Digest primitives ─────────────────────────────────────────────
+// Color-coded category badge (Blockers / New / Upcoming / etc).
+const DigestBadge = ({ label, color }) => (
+  <span style={{
+    display: "inline-block", flexShrink: 0,
+    fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
+    color, background: `${color}1A`,
+    padding: "2px 7px", borderRadius: layout.radiusXs,
+    letterSpacing: "0.05em", textTransform: "uppercase",
+    whiteSpace: "nowrap", lineHeight: 1.5,
+  }}>{label}</span>
+);
+
+// Inline clickable project link → navigates to the project detail page.
+const DigestLink = ({ id, name, onNavigate }) => (
+  <button
+    type="button"
+    onClick={() => onNavigate?.("projects", id)}
+    style={{
+      background: "none", border: "none", padding: 0, margin: 0,
+      font: "inherit", cursor: "pointer", fontWeight: 700, color: c.accent,
+    }}
+    onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
+    onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}
+  >{name}</button>
+);
+
+// Week-on-week trend chip ("↑2 vs last week"). Hidden when delta unavailable.
+const DigestTrend = ({ delta }) => {
+  if (delta == null || !Number.isFinite(delta)) return null;
+  const isZero = delta === 0;
+  const color = isZero ? c.textGhost : delta > 0 ? c.green : c.red;
+  return (
+    <span style={{
+      fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
+      color, fontVariantNumeric: "tabular-nums", marginLeft: 6, whiteSpace: "nowrap",
+    }}>
+      {isZero ? "±0" : delta > 0 ? `↑${delta}` : `↓${Math.abs(delta)}`} vs last week
+    </span>
+  );
+};
+
+// Renders a text segment, coloring any ⚠ warning marker red (preserves the
+// old dangerouslySetInnerHTML behavior without the raw HTML).
+const renderDigestText = (txt) =>
+  txt.split("⚠").map((part, k) => (
+    <React.Fragment key={k}>
+      {k > 0 && <span style={{ color: c.red }}>⚠</span>}
+      {part}
+    </React.Fragment>
+  ));
+
+// One digest line: badge + linkified text (+ optional trend). Every row shares
+// the same plain structure — only the badge color differs between them.
+const DigestRow = ({ row, onNavigate }) => {
+  const body = (
+    <span style={{
+      fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
+      color: c.text, lineHeight: 1.6,
+    }}>
+      {row.segments.map((seg, j) =>
+        seg.link
+          ? <DigestLink key={j} id={seg.link.id} name={seg.link.name} onNavigate={onNavigate} />
+          : <React.Fragment key={j}>{renderDigestText(seg.text)}</React.Fragment>
+      )}
+      <DigestTrend delta={row.delta} />
+    </span>
+  );
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: space[2] }}>
+      {row.badge && <DigestBadge label={row.badge.label} color={row.badge.color} />}
+      {body}
+    </div>
+  );
+};
+
 const SummaryView = ({
   loading, error,
   projects, people, squads,
   globalFilters, onNavigate,
   phaseDurationDefaults,
-  followedProjects = [], viewerSquad,
+  myLens = false, followedProjects = [], viewerSquad,
   timeframe,
 }) => {
   const devRef = useDevLabel('SummaryView', 'src/views/SummaryView.jsx', 'Project-centric dashboard');
@@ -148,6 +347,7 @@ const SummaryView = ({
         return gf.person.some(fp => assoc.has(fp));
       });
     }
+    if (myLens) p = p.filter(x => followedProjects.includes(x.id));
     if (timeframe?.start && timeframe?.end) {
       p = p.filter(proj => {
         const pStart = proj.startDate || proj.tentativeStartDate || proj.createdAt?.slice(0, 10);
@@ -157,12 +357,20 @@ const SummaryView = ({
       });
     }
     return p;
-  }, [projects, people, gf.squad, gf.owner, gf.person, viewerSquad, followedProjects, timeframe]);
+  }, [projects, people, gf.squad, gf.owner, gf.person, myLens, viewerSquad, followedProjects, timeframe]);
 
   const metrics = useMemo(
     () => computeProjectMetrics(filteredProjects, phaseDurationDefaults),
     [filteredProjects, phaseDurationDefaults]
   );
+
+  // Fixed reference dates (set once on mount) for stable WoW/MoM/QoQ diffs.
+  const weekAgoMs = useMemo(() => Date.now() - 7 * 86_400_000, []);
+  const monthAgoMs = useMemo(() => Date.now() - 30 * 86_400_000, []);
+  const quarterAgoMs = useMemo(() => Date.now() - 90 * 86_400_000, []);
+  const histWoW = useMemo(() => computeCountsAt(filteredProjects, weekAgoMs), [filteredProjects, weekAgoMs]);
+  const histMoM = useMemo(() => computeCountsAt(filteredProjects, monthAgoMs), [filteredProjects, monthAgoMs]);
+  const histQoQ = useMemo(() => computeCountsAt(filteredProjects, quarterAgoMs), [filteredProjects, quarterAgoMs]);
 
   const allSquadNames = useMemo(() =>
     (squads && squads.length ? [...squads] : [...new Set(filteredProjects.map(p => p.squad).filter(Boolean))]).sort(),
@@ -227,7 +435,7 @@ const SummaryView = ({
   }
 
   if (filteredProjects.length === 0) {
-    const hasFilter = gf.squad?.length || gf.owner?.length;
+    const hasFilter = gf.squad?.length || gf.owner?.length || gf.person?.length;
     return (
       <div ref={devRef} style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "calc(100vh - 240px)" }}>
         <EmptyState
@@ -261,6 +469,121 @@ const SummaryView = ({
   return (
     <div ref={devRef} style={{ display: "flex", flexDirection: "column", gap: space[4] }}>
 
+      {/* ═══ STATUS KPI CARDS ═══ */}
+      <KpiGrid cols="1fr 1fr 1fr 1fr">
+        <KpiCard index={0} label="In Flight" value={metrics.active.length} sub="active projects">
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
+            <DeltaChip delta={metrics.active.length - histWoW.active} label="WoW" />
+            <DeltaChip delta={metrics.active.length - histMoM.active} label="MoM" />
+            <DeltaChip delta={metrics.active.length - histQoQ.active} label="QoQ" />
+          </div>
+        </KpiCard>
+        <KpiCard index={1} label="Shipped" value={metrics.shipped.length} sub="Alpha · Beta · live">
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
+            <DeltaChip delta={metrics.shipped.length - histWoW.shipped} label="WoW" />
+            <DeltaChip delta={metrics.shipped.length - histMoM.shipped} label="MoM" />
+            <DeltaChip delta={metrics.shipped.length - histQoQ.shipped} label="QoQ" />
+          </div>
+          {(() => {
+            const shipMarked = metrics.shipped.filter(hasShipMarker).length;
+            if (shipMarked === 0) return null;
+            return (
+              <div title={`${shipMarked} project${shipMarked === 1 ? "" : "s"} launched`} style={{
+                display: "inline-flex", alignItems: "center", gap: 5, marginTop: space[2],
+                fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
+                color: c.green, letterSpacing: "0.02em",
+              }}>
+                <span aria-hidden="true" style={{ fontSize: 12 }}>🚀</span>
+                {shipMarked} launched
+              </div>
+            );
+          })()}
+        </KpiCard>
+        <KpiCard index={2} label="Needs Attention" value={metrics.needsAttention} sub="blocked + overdue">
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
+            <DeltaChip delta={metrics.needsAttention - histWoW.needsAttention} label="WoW" inverted />
+            <DeltaChip delta={metrics.needsAttention - histMoM.needsAttention} label="MoM" inverted />
+            <DeltaChip delta={metrics.needsAttention - histQoQ.needsAttention} label="QoQ" inverted />
+          </div>
+        </KpiCard>
+        <KpiCard index={3} label="Deprioritized" value={metrics.deprioritized.length} sub="bandwidth or priority holds">
+          <div style={{ display: "flex", gap: space[2], marginTop: space[3], flexWrap: "wrap" }}>
+            <DeltaChip delta={metrics.deprioritized.length - histWoW.deprioritized} label="WoW" muted />
+            <DeltaChip delta={metrics.deprioritized.length - histMoM.deprioritized} label="MoM" muted />
+            <DeltaChip delta={metrics.deprioritized.length - histQoQ.deprioritized} label="QoQ" muted />
+          </div>
+        </KpiCard>
+      </KpiGrid>
+
+      {/* ═══ RECENTLY SHIPPED — projects that entered a release stage in the period ═══ */}
+      {(() => {
+        const fmtD = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null;
+        // Use the selected time period directly (no rolling offset). A project
+        // shows here if it entered Alpha/Beta/GA within the period.
+        const periodStart = timeframe?.start || null;
+        const periodEnd = timeframe?.end || null;
+        const periodLabel = timeframe?.label || "this period";
+        const shippedProjects = (periodStart && periodEnd
+          ? metrics.shipped.filter(p => { const d = shippedDateOf(p); return d && d >= periodStart && d <= periodEnd; })
+          : []
+        ).sort((a, b) => (shippedDateOf(b) || "").localeCompare(shippedDateOf(a) || ""));
+        const total = shippedProjects.length;
+
+        // Stage label without the GA acronym — GA reads as "Live".
+        const stageLabel = (p) => { const s = furthestStageOf(p); return s === "GA" ? "Live" : s; };
+
+        const Chip = ({ p }) => (
+          <button key={p.id} type="button" onClick={() => onNavigate?.("projects", p.id)} style={{
+            display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
+            padding: `${space[2]}px ${space[3]}px`,
+            borderRadius: layout.radiusSm,
+            background: `${c.green}10`,
+            border: `1px solid ${c.green}25`, cursor: "pointer",
+            transition: `border-color ${motion.fast.duration} ${motion.fast.easing}`,
+          }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = c.green}
+            onMouseLeave={e => e.currentTarget.style.borderColor = `${c.green}25`}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: c.green, letterSpacing: "0.05em" }}>
+              {hasShipMarker(p) && <span aria-hidden="true" style={{ fontSize: 11 }}>🚀</span>}
+              {stageLabel(p)}{shippedDateOf(p) ? ` · Shipped ${fmtD(shippedDateOf(p))}` : ""}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: space[1] }}>
+              <span style={{ fontFamily: typo.monoSm.font, color: c.amber, fontSize: 11 }}>{p.id}</span>
+              <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>{p.name}</span>
+            </span>
+          </button>
+        );
+
+        return (
+          <div>
+            <SectionHead title={`Recently Shipped (${total})`} />
+            {/* Context subtitle — the selected time period currently shown */}
+            {periodStart && periodEnd && (
+              <div style={{
+                fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textDim,
+                marginTop: -space[2], marginBottom: space[3],
+              }}>
+                Showing projects shipped {fmtD(periodStart)} — {fmtD(periodEnd)}
+              </div>
+            )}
+            {total === 0 ? (
+              <div style={{
+                padding: `${space[4]}px ${space[4]}px`, borderRadius: layout.radiusSm,
+                background: c.surfaceAlt, border: `1px solid ${c.border}`,
+                fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, color: c.textMid,
+              }}>
+                No projects shipped in {periodLabel}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
+                {shippedProjects.slice(0, 18).map(p => <Chip key={p.id} p={p} />)}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ═══ WEEKLY DIGEST ═══ */}
       <div>
         <SectionHead title="Weekly Digest" right={
@@ -274,19 +597,24 @@ const SummaryView = ({
             <span style={{ fontFamily: typo.displaySm.font, fontSize: typo.displaySm.size, fontWeight: typo.displaySm.weight, color: c.text }}>
               This Week at a Glance
             </span>
+            {digest.health && (
+              <span style={{
+                marginLeft: "auto",
+                display: "inline-flex", alignItems: "center", gap: 6,
+                fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 700,
+                color: digest.health.color, background: `${digest.health.color}1A`,
+                border: `1px solid ${digest.health.color}40`,
+                padding: "3px 11px", borderRadius: 999,
+                textTransform: "uppercase", letterSpacing: "0.06em",
+              }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: digest.health.color }} />
+                {digest.health.label}
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
-            {digest.map((line, i) => (
-              <div key={i} style={{
-                fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
-                color: c.text, lineHeight: 1.6,
-              }}
-                dangerouslySetInnerHTML={{
-                  __html: line
-                    .replace(/\*\*(.*?)\*\*/g, `<span style="font-weight:700;color:${c.text}">$1</span>`)
-                    .replace(/⚠/g, `<span style="color:${c.red}">⚠</span>`)
-                }}
-              />
+            {digest.rows.map(row => (
+              <DigestRow key={row.key} row={row} onNavigate={onNavigate} />
             ))}
           </div>
         </Surface>
@@ -382,56 +710,6 @@ const SummaryView = ({
 
       {/* ═══ SCROLLABLE SECTIONS ═══ */}
       <div style={{ display: "flex", flexDirection: "column", gap: space[7] }}>
-
-        {/* ── Recently Shipped ── */}
-        {(() => {
-          // Alpha: in_flight with Alpha track active
-          const alphaProjects = filteredProjects.filter(p => p.status === "in_flight" && (p.tracks ? Object.keys(p.tracks).some(t => t === "Alpha" && p.tracks[t]?.periods?.some(per => per.completed_at === null)) : p.phase === "Alpha"));
-          // Beta: in_flight with Beta track active
-          const betaProjects = filteredProjects.filter(p => p.status === "in_flight" && (p.tracks ? Object.keys(p.tracks).some(t => t === "Beta" && p.tracks[t]?.periods?.some(per => per.completed_at === null)) : p.phase === "Beta"));
-          const shippedProjects = metrics.shipped;
-          const total = alphaProjects.length + betaProjects.length + shippedProjects.length;
-          if (total === 0) return null;
-
-          const Chip = ({ p, label, labelColor, accentColor, rolloutPct }) => (
-            <button key={p.id} type="button" onClick={() => onNavigate?.("projects", p.id)} style={{
-              display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
-              padding: `${space[2]}px ${space[3]}px`,
-              borderRadius: layout.radiusSm,
-              background: `${accentColor}10`,
-              border: `1px solid ${accentColor}25`, cursor: "pointer",
-              transition: `border-color ${motion.fast.duration} ${motion.fast.easing}`,
-            }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = accentColor}
-              onMouseLeave={e => e.currentTarget.style.borderColor = `${accentColor}25`}
-            >
-              <span style={{ fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700, color: labelColor, letterSpacing: "0.05em" }}>
-                {label}{rolloutPct != null ? ` | ${rolloutPct}% rollout` : ""}
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: space[1] }}>
-                <span style={{ fontFamily: typo.monoSm.font, color: c.amber, fontSize: 11 }}>{p.id}</span>
-                <span style={{ fontFamily: typo.bodyMd.font, fontSize: 13, fontWeight: 600, color: c.text }}>{p.name}</span>
-              </span>
-            </button>
-          );
-
-          return (
-            <div>
-              <SectionHead title={`Recently Shipped (${total})`} />
-              <div style={{ display: "flex", flexWrap: "wrap", gap: space[2] }}>
-                {alphaProjects.slice(0, 6).map(p => (
-                  <Chip key={p.id} p={p} label="Alpha Release" labelColor="#6D28D9" accentColor="#6D28D9" rolloutPct={p.shipPct ?? null} />
-                ))}
-                {betaProjects.slice(0, 6).map(p => (
-                  <Chip key={p.id} p={p} label="Beta Release" labelColor="#0E7490" accentColor="#0E7490" rolloutPct={p.shipPct ?? null} />
-                ))}
-                {shippedProjects.slice(0, 12).map(p => (
-                  <Chip key={p.id} p={p} label="Shipped" labelColor={c.green} accentColor={c.green} rolloutPct={null} />
-                ))}
-              </div>
-            </div>
-          );
-        })()}
 
         {/* ── Needs Attention ── */}
         {metrics.needsAttention > 0 && (
@@ -561,8 +839,8 @@ const SummaryView = ({
                         const byPhase = {};
                         allPhases.forEach(ph => { byPhase[ph] = 0; });
                         sqProjects.forEach(p => { byPhase[p.phase] = (byPhase[p.phase] || 0) + 1; });
-                        const inflightCount = sqProjects.filter(p => p.status === "in_flight").length;
-                        const shippedCount = sqProjects.filter(p => p.status === "shipped").length;
+                        const inflightCount = sqProjects.filter(isInFlight).length;
+                        const shippedCount = sqProjects.filter(isShipped).length;
                         const blockedCount = sqProjects.filter(p => p.isBlocked).length;
                         return { sq, inflight: inflightCount, shipped: shippedCount, blockedCount, byPhase };
                       });

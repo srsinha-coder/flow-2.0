@@ -17,20 +17,14 @@ import { isDevSeedMode, devStore } from "../data/devSeed";
 import { getProjectRole, can as defaultCan } from "../lib/permissions";
 import { initialsOf } from "../lib/names";
 import { timeAgo, isStale, fmtAbsolute } from "../lib/time";
-import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB } from "../lib/mutations";
-import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, pauseAllTracks, getReleaseMilestone } from "../lib/tracks";
+import { getProjectDependencies, deleteProjectFromDB, updateProjectInDB, addProjectLinkToDB, deleteProjectLinkFromDB, startTrackInDB, completeTrackInDB, reopenTrackInDB, shipProjectInDB, recordBackdatedTrackInDB } from "../lib/mutations";
+import { getActiveTracks, getTrackStatus, getTrackActiveDays, getCompletedTracks, derivePrimaryPhase, applyBackdatedTransition, isShipped, isInFlight, hasShipMarker, shippedDateOf, furthestStageOf, pauseAllTracks, getReleaseMilestone } from "../lib/tracks";
 import { buildTagCanon, canonTag, canonTags, allTagsWithCounts, projectHasTag, tagKey } from "../lib/tags";
 import { groupProjects } from "../lib/projectSortUtils";
 import { supabase } from "../lib/supabase";
 import useDevLabel from "../hooks/useDevLabel";
 
 
-// Phase scope for the In Flight vs Shipped tab filter.
-// Kept local to this view — `shipPhases` (Alpha/Beta/GA) in theme.js is
-// unchanged and still correct for metrics, colors, and stage validation
-// (where Alpha/Beta count as "released to users").
-const IN_FLIGHT_PHASES = ["PRD", "Design", "Dev", "QA"];
-const SHIPPED_PHASES = ["Alpha", "Beta", "GA"];
 
 /* ══════════════════════════════════════════════════════════════════
    HELPERS
@@ -197,9 +191,9 @@ function deriveProjectMetrics(projects, history, today) {
 
     // Risk flags
     const daysToEnd = daysBetween(today, proj.endDate);
-    const isShipped = proj.status === "shipped";
-    if (daysToEnd <= 14 && daysToEnd > 0 && !isShipped) m.endingSoon = true;
-    if (daysToEnd < 0 && !isShipped) m.overdue = true;
+    const shipped = isShipped(proj);
+    if (daysToEnd <= 14 && daysToEnd > 0 && !shipped) m.endingSoon = true;
+    if (daysToEnd < 0 && !shipped) m.overdue = true;
 
     // Active tracks
     m.activeTracks = getActiveTracks(proj);
@@ -219,7 +213,7 @@ function deriveProjectMetrics(projects, history, today) {
     }
 
     // At Risk: overdue OR no activity in 1 week OR blocked
-    m.atRisk = proj.status !== "deprioritized" && !isShipped && proj.status !== "upcoming" && (
+    m.atRisk = proj.status !== "deprioritized" && !shipped && proj.status !== "upcoming" && (
       m.overdue || m.noActivityWeek || m.isBlocked
     );
 
@@ -265,6 +259,62 @@ function sortList(list, key, dir, metrics, today) {
   });
 }
 
+// Info affordance for the board's "Single Track Mode" toggle. The (i) icon is
+// keyboard-focusable; hover or focus reveals a styled tooltip explaining the
+// de-dupe behaviour and the fixed stage progression. Replaces the old
+// "De-duplicated · N hidden" summary line.
+const STAGE_ORDER_LABEL = "PRD → Design → Dev → QA → Alpha → Beta";
+function BoardStageInfo() {
+  const [show, setShow] = React.useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        type="button"
+        aria-label={`About Single Track Mode. Shows each project only in its most advanced stage. Stage order: ${STAGE_ORDER_LABEL}`}
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        onClick={(e) => { e.stopPropagation(); setShow(s => !s); }}
+        style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 18, height: 18, padding: 0, flexShrink: 0,
+          border: "none", background: "transparent",
+          color: show ? c.accent : c.textDim, cursor: "help",
+          transition: `color ${motion.fast.duration} ${motion.fast.easing}`,
+        }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+      </button>
+      {show && (
+        <div role="tooltip" style={{
+          position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 300,
+          width: 284, padding: `${space[2] + 2}px ${space[3]}px`,
+          background: c.surfaceSolid, border: `1px solid ${c.border}`,
+          borderRadius: layout.radiusMd,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.14), 0 4px 12px rgba(0,0,0,0.07)",
+          textAlign: "left", pointerEvents: "none",
+        }}>
+          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 700, color: c.text, marginBottom: 4 }}>
+            Single Track Mode
+          </div>
+          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, fontWeight: 400, color: c.textMid, lineHeight: 1.5 }}>
+            When enabled, a project spanning multiple stages appears only in its most advanced stage — removed from the earlier ones.
+          </div>
+          <div style={{
+            marginTop: 7, paddingTop: 6, borderTop: `1px solid ${c.border}`,
+            fontFamily: typo.monoSm.font, fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: "0.02em",
+          }}>
+            {STAGE_ORDER_LABEL}
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════
    MAIN EXPORT
    ══════════════════════════════════════════════════════════════════ */
@@ -274,7 +324,7 @@ export default function ProjectsView({
   initialId, onNavigate, setDetailLabel, setGoBack, searchRef, globalFilters = {},
   suppressBackRef,
   projectLinks, setProjectLinks, phaseDurationDefaults,
-  followedProjects = [], toggleFollowProject,
+  myLens = false, followedProjects = [], toggleFollowProject,
   timeframe, onApplyTagFilter,
 }) {
   const can = permCan || defaultCan;
@@ -394,6 +444,18 @@ export default function ProjectsView({
   const [boardSquads, setBoardSquads] = useState([]);
   const [boardOwners, setBoardOwners] = useState([]);
   const [boardPhases, setBoardPhases] = useState([]);
+  // "Single Track Mode" board toggle — de-dupes multi-track projects to their
+  // furthest stage. Persisted within the session so it survives navigating away.
+  const [boardLatestOnly, setBoardLatestOnly] = useState(() => {
+    try { return sessionStorage.getItem("flow_board_latest_only") === "1"; } catch { return false; }
+  });
+  const toggleBoardLatestOnly = useCallback(() => {
+    setBoardLatestOnly(v => {
+      const next = !v;
+      try { sessionStorage.setItem("flow_board_latest_only", next ? "1" : "0"); } catch { /* sessionStorage unavailable */ }
+      return next;
+    });
+  }, []);
   const boardSearchRef = useRef(null);
   const [ganttSearch, setGanttSearch] = useState("");
   const [ganttSquads, setGanttSquads] = useState([]);
@@ -467,6 +529,35 @@ export default function ProjectsView({
     }
   }, [initialId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Map person id → name so the People filter can match whether the project
+  // stores a person by id (owner_id, member person_id) or by name (owner, weekly
+  // history contributors).
+  const idToName = useMemo(() => {
+    const m = new Map();
+    (people || []).forEach(p => { if (p.id != null) m.set(p.id, p.name); });
+    return m;
+  }, [people]);
+
+  // Every person associated with a project — as owner/DRI OR as a team member —
+  // expressed as BOTH their name and id, so the People filter (whose selected
+  // values are names) matches regardless of how the field is stored.
+  const projectPeople = useCallback((proj, m) => {
+    const s = new Set();
+    if (proj.owner) s.add(proj.owner);                 // owner stored as name
+    if (proj.owner_id != null) {
+      s.add(proj.owner_id);                            // owner stored as id
+      const on = idToName.get(proj.owner_id);
+      if (on) s.add(on);                               // resolve id → name
+    }
+    (m?.teamMembers || []).forEach(pid => {            // team members (person ids)
+      s.add(pid);
+      const nm = idToName.get(pid);
+      if (nm) s.add(nm);                               // resolve id → name
+    });
+    (m?.people || []).forEach(nm => s.add(nm));        // weekly history contributors (names)
+    return s;
+  }, [idToName]);
+
   // ── Filter (search + global) ──
   const filtered = useMemo(() => {
     let list = projects;
@@ -482,13 +573,20 @@ export default function ProjectsView({
     if ((globalFilters.squad || []).length > 0) list = list.filter(p => globalFilters.squad.includes(p.squad));
     if (listSquadFilter) list = list.filter(p => p.squad === listSquadFilter);
     if ((globalFilters.person || []).length > 0) {
-      list = list.filter(p => globalFilters.person.some(fp => metrics[p.id]?.people.has(fp)));
+      list = list.filter(p => {
+        const assoc = projectPeople(p, metrics[p.id]);
+        return globalFilters.person.some(fp => assoc.has(fp));
+      });
     }
     if ((globalFilters.track || []).length > 0) {
       list = list.filter(p => globalFilters.track.some(t => (metrics[p.id]?.activeTracks || []).includes(t)));
     }
     if ((globalFilters.type || []).length > 0) list = list.filter(p => globalFilters.type.includes(p.type));
     if ((globalFilters.tags || []).length > 0) list = list.filter(p => globalFilters.tags.some(tg => projectHasTag(p.tags, tg, tagCanon)));
+    // My Lens: show only followed projects (auto-followed squad + explicit follows)
+    if (myLens) {
+      list = list.filter(p => followedProjects.includes(p.id));
+    }
     // Timeframe filter: project overlaps with the selected range
     if (timeframe?.start && timeframe?.end) {
       list = list.filter(p => {
@@ -502,7 +600,7 @@ export default function ProjectsView({
       });
     }
     return list;
-  }, [projects, search, globalFilters, metrics, listSquadFilter, personProfile, followedProjects, timeframe, tagCanon]);
+  }, [projects, search, globalFilters, metrics, listSquadFilter, myLens, personProfile, followedProjects, timeframe, projectPeople, tagCanon]);
 
   // ── Tab splits ──
   // When a search query is active, bypass the tab filter so results surface
@@ -516,15 +614,15 @@ export default function ProjectsView({
       // Alpha/Beta-active projects count as released (shown with shipped, not in-flight).
       const hasReleased = (p) => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
       switch (activeTab) {
-        case "active": list = filtered.filter(p => p.status === "in_flight" && !hasReleased(p)); break;
+        case "active": list = filtered.filter(isInFlight); break;
         case "at_risk": list = filtered.filter(p => metrics[p.id]?.atRisk); break;
-        case "shipped": list = filtered.filter(p => p.status === "shipped" || (p.status === "in_flight" && hasReleased(p))); break;
+        case "shipped": list = filtered.filter(isShipped); break;
         case "blocked": list = filtered.filter(p => p.status === "blocked" || metrics[p.id]?.isBlocked); break;
         case "deprioritized": list = filtered.filter(p => p.status === "deprioritized"); break;
         case "upcoming": list = filtered.filter(p => p.status === "upcoming").sort((a, b) =>
           (a.tentativeStartDate || "9999").localeCompare(b.tentativeStartDate || "9999")
         ); break;
-        case "overdue": list = filtered.filter(p => p.status === "in_flight" && metrics[p.id]?.overdue); break;
+        case "overdue": list = filtered.filter(p => isInFlight(p) && metrics[p.id]?.overdue); break;
         default: list = filtered;
       }
     }
@@ -575,8 +673,8 @@ export default function ProjectsView({
   // Risk is computed once in `deriveProjectMetrics`; this section
   // never re-derives it, so numbers stay consistent with the table.
   const summary = useMemo(() => {
-    const active = filtered.filter(p => p.status === "in_flight");
-    const shipped = filtered.filter(p => p.status === "shipped");
+    const active = filtered.filter(isInFlight);
+    const shipped = filtered.filter(isShipped);
     const depri = filtered.filter(p => p.status === "deprioritized");
     const upcomingProjs = filtered.filter(p => p.status === "upcoming");
     const blockedProjs = filtered.filter(p => p.status === "blocked" || metrics[p.id]?.isBlocked);
@@ -587,14 +685,11 @@ export default function ProjectsView({
       trackCounts[t] = active.filter(p => (metrics[p.id]?.activeTracks || []).includes(t)).length;
     });
     const overdueCount = active.filter(p => metrics[p.id]?.overdue).length;
-    // Projects with Alpha or Beta tracks active count toward "shipping" bucket
-    const alphaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Alpha")).length;
-    const betaActive = active.filter(p => (metrics[p.id]?.activeTracks || []).includes("Beta")).length;
-    // Distinct released-in-flight (alpha OR beta active) — excluded from In Flight
-    const releasedActive = active.filter(p => (metrics[p.id]?.activeTracks || []).some(t => t === "Alpha" || t === "Beta")).length;
-    const inFlightCount = active.length - releasedActive;
-    const shippedTotal = shipped.length + releasedActive;
-    return { active: active.length, inFlightCount, shipped: shipped.length, shippedTotal, alphaActive, betaActive, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
+    const shipMarked = shipped.filter(hasShipMarker).length;
+    // Shipped breakdown by furthest release stage. GA reads as "Launched".
+    const shippedByStage = { Alpha: 0, Beta: 0, GA: 0 };
+    shipped.forEach(p => { const st = furthestStageOf(p); if (shippedByStage[st] != null) shippedByStage[st]++; });
+    return { active: active.length, shipped: shipped.length, shipMarked, shippedByStage, depri: depri.length, upcoming: upcomingProjs.length, blocked: blockedProjs.length, overdue: overdueCount, all: filtered.length, atRiskCount, trackCounts };
   }, [filtered, metrics, today]);
 
   // ── Gantt-specific filter (separate from registry filters) ──
@@ -865,10 +960,10 @@ export default function ProjectsView({
       }}>
 
         {/* ═══════════════════════════════════════════════════════════
-            KPI GRID — 4 cards (Active / At Risk / Overdue / Shipped)
+            KPI GRID — In Flight / Shipped / At Risk / Deprioritized
             Steel & Orange pattern per design-directions.html §KPI CARDS
             ═══════════════════════════════════════════════════════════ */}
-        {viewMode !== "board" && viewMode !== "gantt" && <KpiGrid cols="1fr 1fr 1fr">
+        {viewMode !== "board" && viewMode !== "gantt" && <KpiGrid cols="1fr 1fr 1fr 1fr">
           <KpiCard
             index={0}
             label="In Flight"
@@ -876,6 +971,7 @@ export default function ProjectsView({
             onClick={() => setActiveTab("active")}
             active={activeTab === "active"}
           >
+            {/* In Flight spans the build stages: PRD → Design → Dev → QA */}
             <PillRow>
               {["PRD", "Design", "Dev", "QA"].map(t => (
                 <Pill
@@ -890,14 +986,15 @@ export default function ProjectsView({
           <KpiCard
             index={1}
             label="Shipped"
-            value={summary.shippedTotal}
+            value={summary.shipped}
             onClick={() => setActiveTab(activeTab === "shipped" ? "all" : "shipped")}
             active={activeTab === "shipped"}
           >
+            {/* Shipped spans the release stages: Launched (GA) · Alpha · Beta */}
             <PillRow>
-              <Pill count={summary.shipped} label="Shipped" color={c.green} />
-              <Pill count={summary.alphaActive} label="Alpha" color={pc.Alpha} />
-              <Pill count={summary.betaActive} label="Beta" color={pc.Beta} />
+              <Pill count={summary.shippedByStage?.GA || 0} label="Launched" color={c.green} />
+              <Pill count={summary.shippedByStage?.Alpha || 0} label="Alpha" color={pc["Alpha"] || c.textDim} />
+              <Pill count={summary.shippedByStage?.Beta || 0} label="Beta" color={pc["Beta"] || c.textDim} />
             </PillRow>
           </KpiCard>
           <KpiCard
@@ -910,6 +1007,17 @@ export default function ProjectsView({
             <PillRow>
               <Pill count={summary.blocked} label="Blocked" color={c.red} />
               <Pill count={summary.overdue} label="Overdue" color={c.amber} />
+            </PillRow>
+          </KpiCard>
+          <KpiCard
+            index={3}
+            label="Deprioritized"
+            value={summary.depri}
+            onClick={() => setActiveTab(activeTab === "deprioritized" ? "all" : "deprioritized")}
+            active={activeTab === "deprioritized"}
+          >
+            <PillRow>
+              <Pill count={summary.depri} label="On hold" color={c.textDim} />
             </PillRow>
           </KpiCard>
         </KpiGrid>}
@@ -997,6 +1105,18 @@ export default function ProjectsView({
             }}>/</span>}
           </div>
         </div>
+
+        {/* RESULT COUNT — shown when a global filter or search narrows the list */}
+        {viewMode === "registry" && (globalFilters.person?.length || globalFilters.owner?.length || globalFilters.squad?.length || globalFilters.track?.length || search.trim()) ? (
+          <div style={{
+            marginTop: space[2],
+            fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, fontWeight: 600,
+            letterSpacing: typo.monoSm.tracking, color: c.textMid,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            Showing <span style={{ color: c.text, fontWeight: 700 }}>{tabProjects.length}</span> of {projects.length} projects
+          </div>
+        ) : null}
       </div>
       {/* end frozen top */}
 
@@ -1014,11 +1134,15 @@ export default function ProjectsView({
           PRD: "#D8B4FE", Design: "#A5C8FF", Dev: "#FDE68A", QA: "#99D5DB", Alpha: "#A5D8FF", Beta: "#FCD34D",
         };
 
-        // Columns = the 6 tracks (no GA)
+        // Columns = the 6 tracks (no GA). Stage order is the trackNames order:
+        // PRD → Design → Dev → QA → Alpha → Beta.
         const columns = trackNames;
-        // Build column data: a project appears in every column where it has an active track
+        // Build column data. By default a project appears in every column where it
+        // has an active track. With "Single Track Mode" ON, it appears only in its
+        // furthest active stage; earlier-stage appearances are counted as hidden.
         const columnProjects = {};
-        columns.forEach(t => { columnProjects[t] = []; });
+        const hiddenByColumn = {};
+        columns.forEach(t => { columnProjects[t] = []; hiddenByColumn[t] = 0; });
         const upcomingBoardProjects = [];
         const shippedBoardProjects = [];
         tabProjects.forEach(proj => {
@@ -1026,7 +1150,15 @@ export default function ProjectsView({
           if (proj.status === "shipped" || proj.status === "complete") { shippedBoardProjects.push(proj); return; }
           const active = getActiveTracks(proj);
           if (active.length === 0) return; // no active tracks, skip
-          active.forEach(t => { if (columnProjects[t]) columnProjects[t].push(proj); });
+          if (boardLatestOnly) {
+            // Furthest active stage = highest index in the fixed stage order.
+            let furthest = null, maxIdx = -1;
+            active.forEach(t => { const i = columns.indexOf(t); if (i > maxIdx) { maxIdx = i; furthest = t; } });
+            if (furthest && columnProjects[furthest]) columnProjects[furthest].push(proj);
+            active.forEach(t => { if (t !== furthest && hiddenByColumn[t] != null) hiddenByColumn[t] += 1; });
+          } else {
+            active.forEach(t => { if (columnProjects[t]) columnProjects[t].push(proj); });
+          }
         });
 
         // Drag helpers
@@ -1157,6 +1289,53 @@ export default function ProjectsView({
             minWidth: columns.length * 180,
             padding: `${space[2]}px 0`,
           }}>
+            {/* ── Board toolbar: Single Track Mode toggle + info tooltip (right-aligned) ── */}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <span id="board-lso-desc" style={{
+                position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+                overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+              }}>
+                Single Track Mode: show each project only in its most advanced stage. Stage order: {STAGE_ORDER_LABEL}.
+              </span>
+              <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: space[2] }}>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={boardLatestOnly}
+                  aria-describedby="board-lso-desc"
+                  onClick={toggleBoardLatestOnly}
+                  title={`Single Track Mode: show each project only in its most advanced stage. Stage order: ${STAGE_ORDER_LABEL}`}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: space[2],
+                    padding: `5px ${space[3]}px 5px ${space[2]}px`, borderRadius: 999,
+                    border: `1px solid ${boardLatestOnly ? c.accent : c.border}`,
+                    background: boardLatestOnly ? c.accentDim : c.surfaceAlt,
+                    cursor: "pointer",
+                    transition: `background ${motion.fast.duration} ${motion.fast.easing}, border-color ${motion.fast.duration} ${motion.fast.easing}`,
+                  }}
+                >
+                  {/* switch track */}
+                  <span aria-hidden="true" style={{
+                    position: "relative", width: 30, height: 17, borderRadius: 999, flexShrink: 0,
+                    background: boardLatestOnly ? c.accent : c.border,
+                    transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
+                  }}>
+                    <span style={{
+                      position: "absolute", top: 2, left: boardLatestOnly ? 15 : 2,
+                      width: 13, height: 13, borderRadius: "50%", background: "#fff",
+                      boxShadow: c.shadowSm,
+                      transition: `left ${motion.fast.duration} ${motion.fast.easing}`,
+                    }} />
+                  </span>
+                  <span style={{
+                    fontFamily: typo.bodySm.font, fontSize: typo.bodySm.size, fontWeight: 600,
+                    color: boardLatestOnly ? c.accent : c.textMid, whiteSpace: "nowrap",
+                  }}>Single Track Mode</span>
+                </button>
+                <BoardStageInfo />
+              </div>
+            </div>
+
             {/* Track columns */}
             <div style={{
               display: "flex", gap: space[3],
@@ -1195,12 +1374,24 @@ export default function ProjectsView({
                         color: phColor, textTransform: "uppercase",
                       }}>{track}</span>
                     </div>
-                    <span style={{
-                      fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
-                      fontWeight: 700, color: c.textMid,
-                      background: c.surfaceAlt, padding: "2px 8px",
-                      borderRadius: layout.radiusPill, border: `1px solid ${c.border}`,
-                    }}>{cards.length}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: space[1] + 2 }}>
+                      {boardLatestOnly && hiddenByColumn[track] > 0 && (
+                        <span
+                          title={`${hiddenByColumn[track]} project${hiddenByColumn[track] === 1 ? "" : "s"} in earlier stages hidden`}
+                          style={{
+                            fontFamily: typo.monoSm.font, fontSize: 10, fontWeight: 700,
+                            color: c.textDim, background: "transparent",
+                            padding: "2px 6px", borderRadius: layout.radiusPill,
+                            border: `1px dashed ${c.border}`, whiteSpace: "nowrap",
+                          }}>{hiddenByColumn[track]} hidden</span>
+                      )}
+                      <span style={{
+                        fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size,
+                        fontWeight: 700, color: c.textMid,
+                        background: c.surfaceAlt, padding: "2px 8px",
+                        borderRadius: layout.radiusPill, border: `1px solid ${c.border}`,
+                      }}>{cards.length}</span>
+                    </div>
                   </div>
 
                   {/* Cards */}
@@ -1587,13 +1778,12 @@ export default function ProjectsView({
                   const isDimmed = proj.status === "deprioritized";
                   const isUpcoming = proj.status === "upcoming";
                   const isPinned = pinnedIds.has(proj.id);
-                  const isShipped = proj.status === "shipped";
-                  const hasReleasedTrack = (m.activeTracks || []).some(t => t === "Alpha" || t === "Beta");
                   const isFollowing = (followedProjects || []).includes(proj.id);
                   const isMember = proj.owner_id === viewerId || (m.teamMembers || []).includes(viewerId);
+                  const shipped = isShipped(proj);
                   const isBlockedProj = proj.status === "blocked" || m.isBlocked;
                   const isBlockedOrOverdue = isBlockedProj || m.overdue;
-                  const leftBarColor = (isShipped || hasReleasedTrack) ? c.green : isBlockedOrOverdue ? c.red : null;
+                  const leftBarColor = shipped ? c.green : isBlockedOrOverdue ? c.red : null;
 
                   const cellBorder = "1px solid rgba(0,0,0,0.03)";
                   const rowBg = isFocused ? `${c.accent}10` : isHovered ? "rgba(0,0,0,0.012)" : c.surface;
@@ -1686,7 +1876,18 @@ export default function ProjectsView({
                           {m.isBlocked && <Tag color={c.red} bg={c.redDim} style={{ flexShrink: 0 }}>BLOCKED</Tag>}
                           {proj.status === "deprioritized" && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>DEPRIORITIZED</Tag>}
                           {isUpcoming && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ flexShrink: 0 }}>UPCOMING</Tag>}
-                          {SHIPPED_PHASES.includes(proj.phase) && <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}>SHIPPED</Tag>}
+                          {shipped && (() => {
+                            const stage = furthestStageOf(proj);
+                            const stageTxt = stage === "GA" ? "Live" : stage;
+                            const sd = shippedDateOf(proj);
+                            const dateShort = sd ? new Date(sd + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : null;
+                            return (
+                              <Tag color={c.green} bg={c.greenDim} style={{ flexShrink: 0 }}
+                                title={sd ? `Shipped ${new Date(sd + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : "Shipped"}>
+                                {hasShipMarker(proj) ? "🚀 " : ""}{stageTxt}{dateShort ? ` · ${dateShort}` : ""}
+                              </Tag>
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -1706,7 +1907,7 @@ export default function ProjectsView({
                         borderBottom: cellBorder,
                       }}>
                         {isUpcoming ? <span style={{ color: c.textDim, fontSize: 11 }}>—</span>
-                         : isShipped ? (
+                         : shipped ? (
                           <span style={{
                             padding: "1px 5px", borderRadius: layout.radiusXs,
                             background: `${c.green}15`, color: c.green,
@@ -1845,7 +2046,7 @@ export default function ProjectsView({
                                   {fmtDate(proj.startDate)}
                                 </span>
                                 <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: c.textDim }}>→</span>
-                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: endHighlight ? (isShipped ? c.green : c.cyan) : c.textMid }}>
+                                <span style={{ fontFamily: typo.monoSm.font, fontSize: typo.monoSm.size, color: endHighlight ? (shipped ? c.green : c.cyan) : c.textMid }}>
                                   {fmtDate(displayEnd)}
                                 </span>
                               </div>
@@ -1870,9 +2071,10 @@ export default function ProjectsView({
                           padding: `0 ${space[3]}px`, borderBottom: cellBorder,
                           textAlign: "center", width: 32,
                         }}>
-                          {/* Followed projects always show a filled bookmark; hovering any
-                              other row reveals an outline bookmark to follow it. */}
-                          {(() => {
+                          {/* When My Lens is off: followed projects always show a filled
+                              bookmark; hovering any other row reveals an outline bookmark
+                              to follow it. (In My Lens view everything shown is followed.) */}
+                          {!myLens && (() => {
                             const isFollowed = followedProjects.includes(proj.id);
                             if (!isFollowed && !isHovered) return null;
                             return (
@@ -2470,6 +2672,17 @@ function CreateProjectOverlay({ projects, people, squads, setProjects, onClose, 
   );
 }
 
+// Combine a date input (YYYY-MM-DD) and a time input (HH:MM) into an ISO
+// timestamp in the user's local timezone. Used by the backdating modals so a
+// missed transition lands at its true past moment.
+function backdatedISO(dateStr, timeStr) {
+  if (!dateStr) return new Date().toISOString();
+  const [h, mi] = (timeStr || "00:00").split(":").map(Number);
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setHours(Number.isFinite(h) ? h : 0, Number.isFinite(mi) ? mi : 0, 0, 0);
+  return d.toISOString();
+}
+
 /* ══════════════════════════════════════════════════════════════════
    PROJECT DEEP DIVE — PeopleDeepDive structural model
    De-cluttered: hero → history → ledger → supporting metadata
@@ -2514,7 +2727,6 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   // Resume flow (unblock / move-to-active): pick which tracks to resume
   const [resumeModal, setResumeModal] = useState(null); // { kind: "blocked"|"deprioritized" } | null
   const [resumeTracks, setResumeTracks] = useState([]);
-  const [stagePickerOpen, setStagePickerOpen] = useState(false);
   const [hoveredTrack, setHoveredTrack] = useState(null);
   const [startNowModal, setStartNowModal] = useState(false);
   const [startNowTracks, setStartNowTracks] = useState(["PRD"]);
@@ -2629,6 +2841,71 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
   const [depsError, setDepsError] = useState(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [phaseTransitions, setPhaseTransitions] = useState([]);
+
+  // ── Backdating: "Log missed transition" + "Add track" modals ──
+  const [missedModal, setMissedModal] = useState(false);
+  const [missedFrom, setMissedFrom] = useState("");
+  const [missedTo, setMissedTo] = useState("");
+  const [missedDate, setMissedDate] = useState(today);
+  const [missedTime, setMissedTime] = useState("12:00");
+  const [missedReason, setMissedReason] = useState("");
+
+  const [addTrackModal, setAddTrackModal] = useState(false);
+  const [addTrackPhase, setAddTrackPhase] = useState("");
+  const [addTrackStart, setAddTrackStart] = useState(today);   // defaults to today, editable
+  const [addTrackEnd, setAddTrackEnd] = useState("");          // optional — leave blank for an ongoing track
+  const [addTrackNote, setAddTrackNote] = useState("");
+
+  const openMissedModal = useCallback(() => {
+    setMissedFrom(""); setMissedTo(""); setMissedDate(today); setMissedTime("12:00"); setMissedReason("");
+    setMissedModal(true);
+  }, [today]);
+  const openAddTrackModal = useCallback(() => {
+    setAddTrackPhase(""); setAddTrackStart(today); setAddTrackEnd(""); setAddTrackNote("");
+    setAddTrackModal(true);
+  }, [today]);
+
+  // Shared writer for the transition / add-track modals: optimistic React update
+  // + persist via the mutations layer (dev seed or Supabase) + timeline refresh.
+  // `backdated` controls whether the entry is tagged as retroactively logged.
+  const applyBackdated = useCallback(({ from = null, to, at, endAt = null, reason = null, note = null, action, backdated = true }) => {
+    setProjects(prev => prev.map(p => {
+      if (p.id !== proj.id) return p;
+      const tracks = applyBackdatedTransition(p.tracks, from, to, at, endAt, backdated);
+      const updated = { ...p, tracks, lastActivityAt: new Date().toISOString() };
+      updated.phase = derivePrimaryPhase(updated);
+      if (updated.status === "upcoming") updated.status = "in_flight";
+      return updated;
+    }));
+    recordBackdatedTrackInDB(proj.id, { from, to, at, endAt, reason, note, action, backdated }, projects);
+    // Only an open (ongoing) track defines the current phase on the timeline.
+    if (!endAt) {
+      setPhaseTransitions(prev =>
+        [...prev, { at, phase: to, by: personProfile?.name || "You", backdated }]
+          .sort((a, b) => new Date(a.at) - new Date(b.at))
+      );
+    }
+  }, [proj.id, projects, setProjects, personProfile]);
+
+  const saveMissedTransition = useCallback(() => {
+    if (!missedTo) return;
+    const at = backdatedISO(missedDate, missedTime);
+    applyBackdated({ from: missedFrom || null, to: missedTo, at, reason: missedReason.trim() || null, action: "project_phase_changed", backdated: true });
+    setMissedModal(false);
+    window.__flowToast?.(`Logged ${missedFrom ? missedFrom + " → " : ""}${missedTo} (backdated)`);
+  }, [missedTo, missedFrom, missedDate, missedTime, missedReason, applyBackdated]);
+
+  const saveAddTrack = useCallback(() => {
+    if (!addTrackPhase) return;
+    const at = backdatedISO(addTrackStart, "12:00");
+    // Optional end date → log a track that already ran to completion (ignored if before start).
+    const endAt = (addTrackEnd && addTrackEnd >= addTrackStart) ? backdatedISO(addTrackEnd, "12:00") : null;
+    const isBackdated = addTrackStart < today; // only flag as backdated when the start is in the past
+    applyBackdated({ from: null, to: addTrackPhase, at, endAt, note: addTrackNote.trim() || null, action: "track_started", backdated: isBackdated });
+    setAddTrackModal(false);
+    window.__flowToast?.(`${addTrackPhase} track ${endAt ? "logged" : "started"}`);
+  }, [addTrackPhase, addTrackStart, addTrackEnd, addTrackNote, applyBackdated, today]);
+
   // Resources IIFE states — hoisted to component level to avoid conditional hook ordering
   const [resAdding, setResAdding] = useState(false);
   const [resNewType, setResNewType] = useState("prd");
@@ -3657,17 +3934,15 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
                 <SearchSelect value={editSquad} onChange={setEditSquad} options={allSquads} placeholder="Search squads..." />
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
-              <div>
-                <Label style={{ marginBottom: space[1] }}>Complexity</Label>
-                <Sel value={editComplexity} onChange={e => setEditComplexity(e.target.value)} style={{ width: "100%" }}>
-                  <option value="">Not set</option>
-                  <option value="S">Low</option>
-                  <option value="M">Medium</option>
-                  <option value="L">High</option>
-                  <option value="XL">Very High</option>
-                </Sel>
-              </div>
+            <div>
+              <Label style={{ marginBottom: space[1] }}>Complexity</Label>
+              <Sel value={editComplexity} onChange={e => setEditComplexity(e.target.value)} style={{ width: "100%" }}>
+                <option value="">Not set</option>
+                <option value="S">Low</option>
+                <option value="M">Medium</option>
+                <option value="L">High</option>
+                <option value="XL">Very High</option>
+              </Sel>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: space[3] }}>
               <div>
@@ -4146,7 +4421,15 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
       {/* ═══ TIMELINE — TrackGantt then alerts below ═══ */}
       {proj.status !== "upcoming" && <div data-tour="track-gantt">
-        <SectionHead title="Timeline" />
+        <SectionHead title="Timeline" right={can.manageTracks(projRole) ? (
+          <button type="button" onClick={openMissedModal} style={{
+            display: "flex", alignItems: "center", gap: 5,
+            padding: `4px ${space[2]}px`, borderRadius: layout.radiusSm,
+            border: `1px solid ${c.border}`, background: c.surfaceAlt,
+            color: c.textMid, cursor: "pointer",
+            fontFamily: typo.bodySm.font, fontSize: 11, fontWeight: 600,
+          }}>⤺ Log missed transition</button>
+        ) : null} />
 
         {/* ── Track Gantt (parallel tracks) ── */}
         <TrackGantt
@@ -4303,6 +4586,107 @@ function ProjectDeepDive({ proj, metrics: m, history, projects, setProjects, peo
 
 
       {/* FAB removed — edit is now the pencil icon in the header; delete lives in the edit panel. */}
+
+      {/* ═══ LOG MISSED TRANSITION — backdated PRD → Dev style entry ═══ */}
+      <Modal open={missedModal} onClose={() => setMissedModal(false)} title="Log missed transition" accent={c.amber}>
+        <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodySm.size, color: c.textMid, lineHeight: 1.5, marginBottom: space[4] }}>
+          Record a phase transition that wasn't logged on time. It'll appear in the timeline at the date you choose, marked <strong style={{ color: c.amber }}>backdated</strong>.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Phase from <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+              <Sel value={missedFrom} onChange={e => setMissedFrom(e.target.value)} style={{ width: "100%" }}>
+                <option value="">— none —</option>
+                {trackNames.map(t => <option key={t} value={t}>{t}</option>)}
+              </Sel>
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Phase to</Label>
+              <Sel value={missedTo} onChange={e => setMissedTo(e.target.value)} style={{ width: "100%" }}>
+                <option value="">— select —</option>
+                {trackNames.filter(t => t !== missedFrom).map(t => <option key={t} value={t}>{t}</option>)}
+              </Sel>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Date</Label>
+              <Inp type="date" value={missedDate} max={today} onChange={e => setMissedDate(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Time</Label>
+              <Inp type="time" value={missedTime} onChange={e => setMissedTime(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+          </div>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Reason for backdating <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+            <textarea
+              value={missedReason}
+              onChange={e => setMissedReason(e.target.value)}
+              placeholder="e.g. Forgot to log when Dev actually started"
+              rows={2}
+              style={{
+                width: "100%", padding: `${space[2]}px ${space[3]}px`,
+                borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                background: c.surfaceAlt, color: c.text, resize: "vertical",
+                fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
+                outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: space[2], justifyContent: "flex-end", marginTop: space[1] }}>
+            <Btn variant="ghost" size="sm" onClick={() => setMissedModal(false)}>Cancel</Btn>
+            <Btn variant="command" size="sm" disabled={!missedTo} style={{ borderColor: c.amberBorder, color: c.amber }} onClick={saveMissedTransition}>Save transition</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ═══ ADD TRACK — start a phase (start date defaults to today, optional end) ═══ */}
+      <Modal open={addTrackModal} onClose={() => setAddTrackModal(false)} title="Add track" accent={c.accent}>
+        <div style={{ fontFamily: typo.bodyMd.font, fontSize: typo.bodySm.size, color: c.textMid, lineHeight: 1.5, marginBottom: space[4] }}>
+          Start a track. The start date defaults to today — edit it to log when work actually began. Leave the end date blank for an ongoing track.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: space[3] }}>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Phase</Label>
+            <Sel value={addTrackPhase} onChange={e => setAddTrackPhase(e.target.value)} style={{ width: "100%" }}>
+              <option value="">— select —</option>
+              {trackNames.map(t => <option key={t} value={t}>{t}</option>)}
+            </Sel>
+          </div>
+          <div style={{ display: "flex", gap: space[3] }}>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>Start date</Label>
+              <Inp type="date" value={addTrackStart} max={today} onChange={e => setAddTrackStart(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <Label style={{ marginBottom: space[1] }}>End date <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+              <Inp type="date" value={addTrackEnd} min={addTrackStart} max={today} onChange={e => setAddTrackEnd(e.target.value)} style={{ width: "100%", colorScheme: "light" }} />
+            </div>
+          </div>
+          <div>
+            <Label style={{ marginBottom: space[1] }}>Notes <span style={{ color: c.textDim, fontWeight: 400 }}>(optional)</span></Label>
+            <textarea
+              value={addTrackNote}
+              onChange={e => setAddTrackNote(e.target.value)}
+              placeholder={`What's going into ${addTrackPhase || "this track"}?`}
+              rows={2}
+              style={{
+                width: "100%", padding: `${space[2]}px ${space[3]}px`,
+                borderRadius: layout.radiusSm, border: `1px solid ${c.border}`,
+                background: c.surfaceAlt, color: c.text, resize: "vertical",
+                fontFamily: typo.bodyMd.font, fontSize: typo.bodyMd.size,
+                outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: space[2], justifyContent: "flex-end", marginTop: space[1] }}>
+            <Btn variant="ghost" size="sm" onClick={() => setAddTrackModal(false)}>Cancel</Btn>
+            <Btn variant="command" size="sm" disabled={!addTrackPhase} onClick={saveAddTrack}>Add track</Btn>
+          </div>
+        </div>
+      </Modal>
 
       {/* ═══ START NOW MODAL — pick tracks to begin ═══ */}
       <Modal open={startNowModal} onClose={() => { setStartNowModal(false); setStartNowEndDate(""); }} title="Start this project" accent={c.accent}>
