@@ -557,53 +557,55 @@ html, body { overflow-x: clip; max-width: 100%; }
 }
 
 /* ── Notification center: What's New timeline ── */
-/* Subtle vertical connector line running through a dot at each date. */
+/* Subtle vertical connector line running through a dot at each date.
+   Rail geometry: [date 56px][line at 64px][items, content padded to clear it].
+   The line lives just right of the date column; dots sit centered on it. */
 .nc-timeline { position: relative; }
 .nc-timeline::before {
   content: "";
   position: absolute;
-  left: 79px;
-  top: 6px;
-  bottom: 6px;
+  left: 63px;
+  top: 8px;
+  bottom: 8px;
   width: 2px;
-  background: #D8D8DE;
+  background: #D7D7DD;
   border-radius: 2px;
 }
 .nc-timeline-row {
   position: relative;
   display: flex;
-  gap: 24px;
-  margin-bottom: 20px;
+  gap: 0;
+  margin-bottom: 16px;
 }
 .nc-timeline-date {
   flex: 0 0 56px;
+  text-align: right;
+  padding-right: 16px;
 }
 .nc-timeline-dot {
   position: absolute;
-  left: 75px;
+  left: 60px;
   top: 9px;
   width: 9px;
   height: 9px;
   border-radius: 50%;
   background: #E8590C;
   border: 2px solid #EDEDF0;
-  box-shadow: 0 0 0 1px #D8D8DE;
+  box-shadow: 0 0 0 1px #D7D7DD;
   z-index: 1;
 }
 .nc-timeline-items {
   flex: 1 1 auto;
   min-width: 0;
-  padding-left: 40px;
+  padding-left: 24px;
 }
-.nc-launch-tile { max-width: 78%; }
+/* Launch tiles fill the timeline's content column (no awkward right gutter). */
+.nc-launch-tile { width: 100%; }
 
-@media (max-width: 1024px) {
-  .nc-launch-tile { max-width: 100%; }
-}
 @media (max-width: 640px) {
   .nc-timeline::before { left: 5px; }
   .nc-timeline-dot { left: 1px; top: 4px; }
   .nc-timeline-row { flex-direction: column; gap: 6px; padding-left: 24px; margin-bottom: 24px; }
-  .nc-timeline-date { flex: none; }
+  .nc-timeline-date { flex: none; text-align: left; padding-right: 0; }
   .nc-timeline-items { padding-left: 0; }
 }
