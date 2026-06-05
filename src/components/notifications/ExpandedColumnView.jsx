@@ -26,7 +26,7 @@ export default function ExpandedColumnView({ open, column, onClose, goProject, o
 
       <div style={{
         maxHeight: "60vh", overflowY: "auto",
-        display: "flex", flexDirection: "column", gap: space[2],
+        display: "flex", flexDirection: "column", gap: space[4],
         paddingRight: space[1],
       }}>
         {col.items.length === 0 ? (

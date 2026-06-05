@@ -43,11 +43,17 @@ export function filterProjectUpdates(raw = [], { viewer = null, followedProjects
 }
 
 /**
- * Critical items needing attention: active blockers + approaching/overdue
- * deadlines (the "action" tier). Nothing routine.
+ * Needs Attention — strictly two conditions, nothing else:
+ *   1. Blocked   — status is blocked / has an active blocker flag (type "block",
+ *                  not yet resolved).
+ *   2. Beyond timeline — the due date / deadline has passed (type "overdue").
+ * Explicitly excluded: approaching-but-not-overdue deadlines, low-priority,
+ * merely-inactive projects, and routine status updates.
  */
 export function filterNeedsAttention(raw = []) {
-  return sortFeed(raw.filter((n) => n.tier === "action"));
+  return sortFeed(
+    raw.filter((n) => (n.type === "block" && !n.resolved) || n.type === "overdue")
+  );
 }
 
 // Re-export the raw collector so callers can build the feed in one import site.

@@ -4,8 +4,8 @@
 // a "[+X more] Click to expand" affordance. The whole column is clickable and
 // opens the full list in ExpandedColumnView.
 import React from "react";
-import { c, mono, typo, space, layout, motion } from "../../styles/theme";
-import { Surface, Tag, EntityLink, Btn } from "../shared";
+import { c, mono, typo, space, motion } from "../../styles/theme";
+import { Surface, EntityLink, Btn } from "../shared";
 
 export function fmtRelative(iso) {
   if (!iso) return "";
@@ -19,74 +19,76 @@ export function fmtRelative(iso) {
 }
 
 // ── Shared item renderer (used by both the column preview and the modal) ──
+// Uniform card geometry — every notification card shares these so columns read
+// as a clean, even grid. (min-height keeps short cards from collapsing; the
+// 2-line clamps keep long ones from overflowing.)
+const CARD = {
+  position: "relative",
+  minHeight: 96,
+  boxSizing: "border-box",
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  padding: 14,
+  borderRadius: 10,
+  background: "#FFFFFF",
+  border: "1px solid #e8e8e8",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+};
+const ACCENT = { mentions: c.cyan, attention: c.red, updates: c.amber };
+const clamp = (lines) => ({ display: "-webkit-box", WebkitLineClamp: lines, WebkitBoxOrient: "vertical", overflow: "hidden" });
+
 export function NotificationItem({ kind, item, goProject, unread = false }) {
   const onProj = (e) => { e.stopPropagation(); goProject?.(item.projectId); };
+  const accent = ACCENT[kind] || c.amber;
   const time = fmtRelative(item.ts);
-  const accent = kind === "mentions" ? c.cyan : kind === "attention" ? c.red : c.amber;
 
-  let body;
+  let title, body;
   if (kind === "mentions") {
     const author = item.author?.name?.split(/\s+/)[0] || "Someone";
     const text = (item.body || "").replace(/\s+/g, " ").trim();
-    const snippet = text.slice(0, 90);
-    body = (
+    title = (
       <>
-        <div style={{ fontFamily: typo.bodyMd.font, fontSize: 13, color: c.text, lineHeight: 1.4 }}>
-          {author} mentioned you on{" "}
-          <EntityLink type="project" underline onClick={onProj}>{item.projectName}</EntityLink>
-        </div>
-        {snippet && (
-          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid, marginTop: 2, lineHeight: 1.5 }}>
-            “{snippet}{text.length > 90 ? "…" : ""}”
-          </div>
-        )}
+        {author} mentioned you on{" "}
+        <EntityLink type="project" underline onClick={onProj}>{item.projectName}</EntityLink>
       </>
     );
+    body = text ? `“${text}”` : null;
   } else {
     // updates / attention — lead with the (clickable) project name, then phrase.
     const detail = item.title?.startsWith(item.projectName)
       ? item.title.slice(item.projectName.length).replace(/^\s+/, "")
       : item.title;
-    body = (
+    title = (
       <>
-        <div style={{ fontFamily: typo.bodyMd.font, fontSize: 13, color: c.text, lineHeight: 1.4 }}>
-          <EntityLink type="project" underline onClick={onProj}>{item.projectName}</EntityLink>
-          {detail ? ` ${detail}` : ""}
-        </div>
-        {item.meta && (
-          <div style={{ fontFamily: typo.bodySm.font, fontSize: 12, color: c.textMid, marginTop: 2, lineHeight: 1.5 }}>
-            {item.meta}
-          </div>
-        )}
+        <EntityLink type="project" underline onClick={onProj}>{item.projectName}</EntityLink>
+        {detail ? ` ${detail}` : ""}
       </>
     );
+    body = item.meta || null;
   }
 
   return (
-    <div style={{
-      position: "relative",
-      padding: `${space[2]}px ${space[3]}px`,
-      paddingLeft: space[3] + 6,
-      borderRadius: layout.radiusSm,
-      background: c.surface,
-      border: `1px solid ${c.border}`,
-      borderLeft: `3px solid ${item.resolved ? c.textGhost : accent}`,
-      opacity: item.resolved ? 0.6 : 1,
-    }}>
-      {/* unread pip */}
-      {unread && !item.resolved && (
-        <span style={{
-          position: "absolute", top: 10, right: 10,
-          width: 7, height: 7, borderRadius: "50%", background: accent,
-        }} />
+    <div style={CARD}>
+      {unread && (
+        <span style={{ position: "absolute", top: 14, right: 14, width: 7, height: 7, borderRadius: "50%", background: accent, flexShrink: 0 }} />
       )}
-      {body}
-      <div style={{ display: "flex", alignItems: "center", gap: space[2], marginTop: space[2] }}>
-        {time && <span style={{ fontFamily: mono, fontSize: 10, color: c.textDim }}>{time}</span>}
-        {kind === "attention" && item.cta && !item.resolved && (
+      {/* Title — bold */}
+      <div style={{ fontFamily: typo.bodyMd.font, fontSize: 14, fontWeight: 700, color: c.text, lineHeight: 1.4, paddingRight: unread ? 14 : 0, ...clamp(2) }}>
+        {title}
+      </div>
+      {/* Body — regular weight, muted */}
+      {body && (
+        <div style={{ fontFamily: typo.bodySm.font, fontSize: 13, fontWeight: 400, color: c.textMid, lineHeight: 1.5, ...clamp(2) }}>
+          {body}
+        </div>
+      )}
+      {/* Footer — metadata + CTA, pinned to the bottom for an even baseline */}
+      <div style={{ display: "flex", alignItems: "center", gap: space[2], marginTop: "auto", paddingTop: space[1] }}>
+        {time && <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 500, color: c.textDim }}>{time}</span>}
+        {kind === "attention" && item.cta && (
           <Btn variant="secondary" size="sm" onClick={onProj} style={{ marginLeft: "auto" }}>{item.cta}</Btn>
         )}
-        {item.resolved && <Tag color={c.textDim} bg={c.surfaceAlt} style={{ marginLeft: "auto" }}>Resolved</Tag>}
       </div>
     </div>
   );
@@ -136,7 +138,7 @@ export default function NotificationColumn({
           Nothing right now.
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: space[2] }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: space[4] }}>
           {preview.map((it) => (
             <NotificationItem key={it.id} kind={kind} item={it} goProject={goProject} unread={isUnread(it)} />
           ))}

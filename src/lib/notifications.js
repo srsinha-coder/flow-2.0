@@ -12,7 +12,6 @@ import { isShipped, shippedDateOf, furthestStageOf } from "./tracks";
 
 const DAY_MS = 86_400_000;
 const ARCHIVE_DAYS = 30;     // older than this is auto-archived (excluded)
-const STALE_DAYS = 3;        // "no recent activity" threshold for action items
 
 const firstName = (name) => (name ? String(name).split(/\s+/)[0] : "Someone");
 
@@ -63,13 +62,12 @@ export function collectNotifications({ projects = [], people = [], viewer = null
     const blocked = p.status === "blocked" || p.isBlocked;
     if (!blocked) return;
     const daysBlocked = daysBetween(p.blockedAt, now);
-    const daysIdle = daysBetween(p.lastActivityAt, now);
     out.push({
       id: `block-${p.id}`,
       tier: "action", type: "block",
       projectId: p.id, projectName: p.name, owner: firstName(p.owner),
       title: `${p.name} has been blocked${daysBlocked != null ? ` for ${daysBlocked} day${daysBlocked === 1 ? "" : "s"}` : ""}`,
-      meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
+      meta: `${p.blockedReason ? `${p.blockedReason} · ` : ""}Owner: ${firstName(p.owner)}`,
       ts: p.blockedAt || p.lastActivityAt || new Date(now).toISOString(),
       cta: "Resolve", resolved: false,
       ownedByViewer: ownedByViewer(p.id),
@@ -77,22 +75,22 @@ export function collectNotifications({ projects = [], people = [], viewer = null
     });
   });
 
-  // ── ACTION: overdue with no recent activity ──
+  // ── ACTION: beyond timeline (deadline/end date has passed) ──
+  // Overdue = due date in the past. Activity level is irrelevant — an actively
+  // worked-on project that blew its deadline still needs attention.
   projects.forEach((p) => {
     if (!p.endDate) return;
     if (["shipped", "deprioritized", "upcoming", "complete"].includes(p.status)) return;
     if (p.status === "blocked" || p.isBlocked) return; // already surfaced as blocked
     const end = new Date(p.endDate + "T00:00:00").getTime();
-    if (end >= now) return;
+    if (end >= now) return; // not past the deadline yet → not overdue
     const daysOver = Math.floor((now - end) / DAY_MS);
-    const daysIdle = daysBetween(p.lastActivityAt, now);
-    if (daysIdle != null && daysIdle < STALE_DAYS) return; // overdue but actively moving — not action
     out.push({
       id: `overdue-${p.id}`,
       tier: "action", type: "overdue",
       projectId: p.id, projectName: p.name, owner: firstName(p.owner),
       title: `${p.name} is overdue by ${daysOver} day${daysOver === 1 ? "" : "s"}`,
-      meta: `${p.lastActivityAt ? `No activity since ${fmtDate(p.lastActivityAt)}` : "No recent activity"}${daysIdle != null ? ` (${daysIdle}d)` : ""} · Owner: ${firstName(p.owner)}`,
+      meta: `Due ${fmtDate(p.endDate)} · Owner: ${firstName(p.owner)}`,
       ts: p.endDate + "T00:00:00",
       cta: "View Project", resolved: false,
       ownedByViewer: ownedByViewer(p.id),

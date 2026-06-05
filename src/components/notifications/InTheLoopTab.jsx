@@ -18,6 +18,11 @@ export default function InTheLoopTab({
 
   const columns = useMemo(() => [
     {
+      key: "attention", title: "Needs Attention", color: c.red, items: attention, unread: unread.attention,
+      isUnread: (it) => !notifSeen.has(it.id),
+      markAll: () => markNotifs(attention.map((n) => n.id)),
+    },
+    {
       key: "mentions", title: "Mentions", color: c.cyan, items: mentions, unread: unread.mentions,
       isUnread: (it) => !mentionRead.has(it.commentId),
       markAll: () => markMentions(mentions.map((m) => m.commentId)),
@@ -26,11 +31,6 @@ export default function InTheLoopTab({
       key: "updates", title: "Updates", color: c.amber, items: updates, unread: unread.updates,
       isUnread: (it) => !notifSeen.has(it.id),
       markAll: () => markNotifs(updates.map((n) => n.id)),
-    },
-    {
-      key: "attention", title: "Needs Attention", color: c.red, items: attention, unread: unread.attention,
-      isUnread: (it) => !notifSeen.has(it.id),
-      markAll: () => markNotifs(attention.map((n) => n.id)),
     },
   ], [mentions, updates, attention, unread, notifSeen, mentionRead, markNotifs, markMentions]);
 
