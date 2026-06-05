@@ -330,8 +330,8 @@ export function Header({
   alertCount = 0,
   // ── Inbox modal data ──
   projects, people, currentPerson, onNavigate,
-  // ── Following (drives the notification "In the Loop" feed) ──
-  followedProjects = [],
+  // ── My Lens + following (following drives the notification "In the Loop" feed) ──
+  myLens = false, toggleMyLens, followedProjects = [],
   // ── Timeframe ──
   timeframe, setTimeframe,
 }) {
@@ -594,6 +594,47 @@ export function Header({
 
       {/* ── Utility cluster: lens · search · user ── */}
       <div style={{ display: "flex", alignItems: "center", gap: space[2], flexShrink: 0 }}>
+        {/* ── My Lens toggle switch (disabled on the Notifications tab) ── */}
+        {toggleMyLens && (() => {
+          const lensDisabled = activeTab === "notifications";
+          return (
+          <div
+            data-tour="my-lens"
+            onClick={lensDisabled ? undefined : toggleMyLens}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              cursor: lensDisabled ? "default" : "pointer",
+              padding: "0 4px", userSelect: "none",
+              opacity: lensDisabled ? 0.3 : 1,
+              transition: `opacity ${motion.fast.duration} ${motion.fast.easing}`,
+            }}
+            title={lensDisabled ? "My Lens is not available on this tab" : myLens ? "My Lens ON — showing your squad + followed projects" : "My Lens — filter to your squad + followed projects"}
+          >
+            <span style={{
+              fontFamily: typo.monoSm.font, fontSize: 12, fontWeight: 700,
+              color: myLens ? "#FFFFFF" : "rgba(255,255,255,0.45)",
+              letterSpacing: "0.06em", textTransform: "uppercase",
+            }}>My Lens</span>
+            <div style={{
+              width: 36, height: 20, borderRadius: 10,
+              background: myLens ? "#FFFFFF" : "rgba(255,255,255,0.2)",
+              position: "relative",
+              transition: `background ${motion.fast.duration} ${motion.fast.easing}`,
+              flexShrink: 0,
+            }}>
+              <div style={{
+                width: 16, height: 16, borderRadius: "50%",
+                background: myLens ? "#111111" : "rgba(255,255,255,0.5)",
+                position: "absolute", top: 2,
+                left: myLens ? 18 : 2,
+                transition: `left ${motion.fast.duration} ${motion.fast.easing}, background ${motion.fast.duration}`,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+              }} />
+            </div>
+          </div>
+          );
+        })()}
+
         <CompactSearch onClick={onCmdOpen} />
 
         {/* ── Notification bell → full-page center (What's New · In the Loop) ── */}
